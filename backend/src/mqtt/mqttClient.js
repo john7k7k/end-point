@@ -190,6 +190,8 @@ async function handleDetection(data) {
       z: telemetry.position.z + cameraPosition.z
     };
     data.objectClass = recognizedScrew.type;
+    data.screwId = recognizedScrew.id;
+    data.dataSource = "simulation";
     data.depth = depthMeters * 100;
     data.sensors = [{
       timestamp: new Date(), imu: true, devicePosition: telemetry.position,
@@ -198,7 +200,11 @@ async function handleDetection(data) {
     data.devicePosition = telemetry.position;
     data.deviceOrientation = { x: orientation.roll, y: orientation.pitch, z: orientation.yaw };
     data.cameraPosition = recognizedScrew.cameraPosition;
-    data.absolutePosition = { x: recognizedScrew.x, y: recognizedScrew.y, z: recognizedScrew.z };
+    data.absolutePosition = {
+      x: Number((telemetry.position.x + Math.cos(yaw) * recognizedScrew.cameraPosition.z - Math.sin(yaw) * recognizedScrew.cameraPosition.x).toFixed(3)),
+      y: Number((telemetry.position.y + Math.sin(yaw) * recognizedScrew.cameraPosition.z + Math.cos(yaw) * recognizedScrew.cameraPosition.x).toFixed(3)),
+      z: Number((telemetry.position.z + recognizedScrew.cameraPosition.y).toFixed(3))
+    };
     data.fusionAlgorithm = getSimulationConfigValue().fusionAlgorithm;
     await Detection.create(data);
 

@@ -1,64 +1,32 @@
 import Detection from "../models/Detection.js";
-import { getDeviceTelemetry } from "../mqtt/mqttClient.js";
-import { getSimulationConfigValue } from "./simulationController.js";
+import OperatorTelemetry from "../models/OperatorTelemetry.js";
 
-const virtualDetection = {
-  objectClass: "screw (simulated)",
-  bbox: { x: 860, y: 460, width: 200, height: 150 },
-  depth: 120
-};
+const fallbackTelemetry = (detection) => ({
+  position: detection.devicePosition,
+  orientation: { roll: detection.deviceOrientation?.x || 0, pitch: detection.deviceOrientation?.y || 0, yaw: detection.deviceOrientation?.z || 0 },
+  quaternion: { w: 1, x: 0, y: 0, z: 0 }, uwbRanges: [], imu: null, workspace: { screws: [] }, updatedAt: detection.timestamp
+});
 
-const cameraCoordinate = (detection) => {
-  const depth = Number(detection.depth || 120) / 100;
-  const centerX = (detection.bbox?.x || 860) + (detection.bbox?.width || 200) / 2;
-  const centerY = (detection.bbox?.y || 460) + (detection.bbox?.height || 150) / 2;
-  return {
-    x: Number((((centerX - 960) / 960) * depth * 0.577).toFixed(3)),
-    y: Number((((centerY - 540) / 540) * depth * 0.325).toFixed(3)),
-    z: Number(depth.toFixed(3))
-  };
-};
-
-const rotateByOrientation = (point, orientation) => {
-  const roll = orientation.roll * Math.PI / 180;
-  const pitch = orientation.pitch * Math.PI / 180;
-  const yaw = orientation.yaw * Math.PI / 180;
-  const cy = Math.cos(yaw), sy = Math.sin(yaw), cp = Math.cos(pitch), sp = Math.sin(pitch), cr = Math.cos(roll), sr = Math.sin(roll);
-  return {
-    x: cy * cp * point.x + (cy * sp * sr - sy * cr) * point.y + (cy * sp * cr + sy * sr) * point.z,
-    y: sy * cp * point.x + (sy * sp * sr + cy * cr) * point.y + (sy * sp * cr - cy * sr) * point.z,
-    z: -sp * point.x + cp * sr * point.y + cp * cr * point.z
-  };
-};
-
+// Read stored snapshots only.  `at` lets history playback select the same time as its video frame.
 export const getLatestPositioning = async (req, res) => {
+  const at = Number(req.query.at);
+  const timeFilter = Number.isFinite(at) && at > 0 ? { timestamp: { $lte: new Date(at) } } : {};
   const detection = req.query.detectionId
-    ? await Detection.findById(req.query.detectionId) || virtualDetection
-    : await Detection.findOne({ operationId: req.params.operationId }).sort({ timestamp: -1 }) || virtualDetection;
-  const latestTelemetry = getDeviceTelemetry();
-  const savedOrientation = detection.deviceOrientation;
-  const recordedTelemetry = detection._id && detection.devicePosition && savedOrientation ? {
-    position: detection.devicePosition,
-    orientation: { roll: savedOrientation.x, pitch: savedOrientation.y, yaw: savedOrientation.z },
-    updatedAt: detection.timestamp
-  } : latestTelemetry;
-  const cameraPosition = cameraCoordinate(detection);
-  const rotatedPoint = rotateByOrientation(cameraPosition, recordedTelemetry.orientation);
-  const calculatedAbsolutePosition = {
-    x: Number((recordedTelemetry.position.x + rotatedPoint.x).toFixed(3)),
-    y: Number((recordedTelemetry.position.y + rotatedPoint.y).toFixed(3)),
-    z: Number((recordedTelemetry.position.z + rotatedPoint.z).toFixed(3))
-  };
+    ? await Detection.findById(req.query.detectionId)
+    : await Detection.findOne({ operationId: req.params.operationId, ...timeFilter }).sort({ timestamp: -1 });
+  const telemetryRecord = await OperatorTelemetry.findOne({ operationId: req.params.operationId, ...timeFilter }).sort({ timestamp: -1 });
+  // OperatorTelemetry is sampled continuously and is the authoritative pose for
+  // the requested live/history instant; detections add only screw-specific data.
+  const telemetry = telemetryRecord?.telemetry || detection?.fusionTelemetry || (detection ? fallbackTelemetry(detection) : null);
+  if (!telemetry?.position) return res.status(404).json({ error: "尚無已儲存的操作員遙測資料。" });
+
   res.json({
-    telemetry: latestTelemetry,
-    detection: { objectClass: detection.objectClass, bbox: detection.bbox, depth: detection.depth, detectionAlgorithm: detection.detectionAlgorithm || "mock_yolo" },
-    // The camera origin is attached to the device, therefore it always follows the
-    // latest UWB + IMU fused device pose.  Keep the screw's relative camera frame
-    // coordinate separately to avoid mixing the two coordinate systems.
-    cameraPosition: latestTelemetry.position,
-    screwCameraPosition: detection.cameraPosition || cameraPosition,
-    absolutePosition: detection.absolutePosition || calculatedAbsolutePosition,
-    fusionAlgorithm: detection.fusionAlgorithm || getSimulationConfigValue().fusionAlgorithm,
-    workspace: latestTelemetry.workspace
+    telemetry,
+    detection: detection ? { objectClass: detection.objectClass, bbox: detection.bbox, depth: detection.depth, detectionAlgorithm: detection.detectionAlgorithm || "mock_yolo", screwId: detection.screwId } : null,
+    cameraPosition: telemetry.position,
+    screwCameraPosition: detection?.cameraPosition || null,
+    absolutePosition: detection?.absolutePosition || null,
+    fusionAlgorithm: detection?.fusionAlgorithm || telemetryRecord?.fusionAlgorithm || "ekf",
+    workspace: telemetry.workspace
   });
 };

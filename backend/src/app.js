@@ -13,6 +13,7 @@ import deviceRoutes from "./routes/deviceRoutes.js";
 import videoRoutes from "./routes/videoRoutes.js";
 import simulationRoutes from "./routes/simulationRoutes.js";
 import positioningRoutes from "./routes/positioningRoutes.js";
+import operatorTelemetryRoutes from "./routes/operatorTelemetryRoutes.js";
 
 const app = express();
 const __filename = fileURLToPath(import.meta.url);
@@ -32,6 +33,7 @@ app.use("/api/device", deviceRoutes);
 app.use("/api/videos", videoRoutes);
 app.use("/api/simulation", simulationRoutes);
 app.use("/api/positioning", positioningRoutes);
+app.use("/api/operator-telemetry", operatorTelemetryRoutes);
 
 if (existsSync(frontendDistPath)) {
   app.use(express.static(frontendDistPath));

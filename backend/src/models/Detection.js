@@ -13,6 +13,8 @@ const DetectionSchema = new mongoose.Schema({
   timestamp: Date,
   imageId: String,
   objectClass: String,
+  screwId: String,
+  dataSource: { type: String, default: "simulation" },
   bbox: BoundingBoxSchema,
   depth: Number,
   sensors: [SensorSchema],

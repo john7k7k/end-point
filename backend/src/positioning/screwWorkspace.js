@@ -29,10 +29,11 @@ export const getVisibleScrews = (telemetry, { minDepth = 0.35, maxDepth = 5, hor
 
 export const getWorkspaceState = (telemetry) => {
   const screws = getVisibleScrews(telemetry);
-  const nearby = screws.filter((screw) => screw.depth <= 3).sort((a, b) => a.depth - b.depth)[0] || null;
+  // Proximity alert is intentionally independent of camera direction / FOV.
+  const nearby = workspaceScrews.map((screw) => ({ ...screw, distance: Math.hypot(screw.x - telemetry.position.x, screw.y - telemetry.position.y, screw.z - telemetry.position.z) })).filter((screw) => screw.distance <= 3).sort((a, b) => a.distance - b.distance)[0] || null;
   return {
     screws,
     visibleScrews: screws.filter((screw) => screw.visible),
-    notification: nearby ? `附近偵測到 ${nearby.type}（${nearby.id}），距離 ${nearby.depth.toFixed(2)} m。` : ''
+    notification: nearby ? `附近有 ${nearby.type}（${nearby.id}），距離 ${nearby.distance.toFixed(2)} m。` : ''
   };
 };

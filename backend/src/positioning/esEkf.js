@@ -70,11 +70,22 @@ export const updateUwb = (ranges) => {
 
 const virtualMeasurements = () => {
   const time = Date.now() / 1000;
-  const truth = [10 + Math.sin(time * 0.2) * 3.5, 6 + Math.cos(time * 0.16) * 2.4, 1.35 + Math.sin(time * 0.1) * 0.08];
+  // Visit the four screw groups in sequence.  The simulated camera faces the
+  // next corner while approaching it, so valid FOV/depth detections are produced.
+  const corners = [[2, 2], [18, 2], [18, 10], [2, 10]];
+  const phase = (time / 8) % corners.length;
+  const index = Math.floor(phase);
+  const progress = phase - index;
+  const eased = progress * progress * (3 - 2 * progress);
+  const from = corners[index];
+  const to = corners[(index + 1) % corners.length];
+  const truth = [from[0] + (to[0] - from[0]) * eased, from[1] + (to[1] - from[1]) * eased, 1.35 + Math.sin(time * 0.1) * 0.08];
+  const heading = Math.atan2(to[1] - from[1], to[0] - from[0]);
   const noise = (index) => Math.sin(time * (index + 1) * 1.7) * 0.035;
   return {
-    acceleration: { x: -0.04 * Math.sin(time * 0.2), y: -0.026 * Math.cos(time * 0.16), z: -0.001 * Math.sin(time * 0.1) },
-    gyroscope: { x: 1.2 * Math.cos(time * 0.3), y: 0.8 * Math.sin(time * 0.23), z: 11.5 },
+    acceleration: { x: .03 * Math.sin(time * .4), y: .03 * Math.cos(time * .35), z: -.001 * Math.sin(time * .1) },
+    gyroscope: { x: 1.2 * Math.cos(time * .3), y: .8 * Math.sin(time * .23), z: 0 },
+    heading,
     ranges: anchors.map((anchor, stationId) => ({ stationId, distance: Math.hypot(...truth.map((value, axis) => value - anchor[axis])) + noise(stationId) }))
   };
 };
@@ -83,6 +94,8 @@ export const stepVirtual = () => {
   const measurement = virtualMeasurements();
   predict(measurement.acceleration, measurement.gyroscope);
   updateUwb(measurement.ranges);
+  // Simulated heading reference (e.g. a calibrated IMU yaw reference).
+  state.quaternion = [Math.cos(measurement.heading / 2), 0, 0, Math.sin(measurement.heading / 2)];
 };
 
 export const getEsEkfState = () => ({

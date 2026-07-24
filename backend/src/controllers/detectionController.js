@@ -1,9 +1,9 @@
 import Detection from "../models/Detection.js";
 import { getDeviceTelemetry } from "../mqtt/mqttClient.js";
 import { getSimulationConfigValue } from "./simulationController.js";
+import { recordOperatorTelemetry } from "./operatorTelemetryController.js";
 
-const attachPositioningData = (data) => {
-  const telemetry = getDeviceTelemetry();
+const attachPositioningData = (data, telemetry) => {
   const recognizedScrew = telemetry.workspace.visibleScrews.sort((a, b) => a.depth - b.depth)[0];
   // Do not create detection records unless a reference screw is inside camera FOV and depth range.
   if (!recognizedScrew) return null;
@@ -16,15 +16,25 @@ const attachPositioningData = (data) => {
   };
   const orientation = telemetry.orientation;
   const yaw = orientation.yaw * Math.PI / 180;
+  const relative = recognizedScrew.cameraPosition;
+  // Re-localise from the current camera observation and fused device pose.
+  const absolutePosition = {
+    x: Number((telemetry.position.x + Math.cos(yaw) * relative.z - Math.sin(yaw) * relative.x).toFixed(3)),
+    y: Number((telemetry.position.y + Math.sin(yaw) * relative.z + Math.cos(yaw) * relative.x).toFixed(3)),
+    z: Number((telemetry.position.z + relative.y).toFixed(3))
+  };
   return {
     ...data,
     objectClass: recognizedScrew.type,
+    screwId: recognizedScrew.id,
+    dataSource: "simulation",
     depth: depthMeters * 100,
     sensors: [{ timestamp: new Date(), imu: true, devicePosition: telemetry.position, gyroscope: { x: orientation.roll, y: orientation.pitch, z: orientation.yaw } }],
     devicePosition: telemetry.position,
     deviceOrientation: { x: orientation.roll, y: orientation.pitch, z: orientation.yaw },
     cameraPosition: recognizedScrew.cameraPosition,
-    absolutePosition: { x: recognizedScrew.x, y: recognizedScrew.y, z: recognizedScrew.z },
+    absolutePosition,
+    fusionTelemetry: { position: telemetry.position, orientation: telemetry.orientation, quaternion: telemetry.quaternion, uwbRanges: telemetry.uwbRanges, imu: telemetry.imu, workspace: telemetry.workspace, updatedAt: telemetry.updatedAt },
     fusionAlgorithm: getSimulationConfigValue().fusionAlgorithm
   };
 };
@@ -43,7 +53,10 @@ export const createDetection = async (req, res) => {
       return res.status(400).json({ error: "objectClass is required" });
     }
 
-    const enriched = attachPositioningData(req.body);
+    const telemetry = getDeviceTelemetry();
+    const fusionAlgorithm = getSimulationConfigValue().fusionAlgorithm;
+    await recordOperatorTelemetry(operationId, timestamp, telemetry, fusionAlgorithm);
+    const enriched = attachPositioningData(req.body, telemetry);
     if (!enriched) return res.status(204).end();
     const detection = await Detection.create(enriched);
     res.status(201).json(detection);

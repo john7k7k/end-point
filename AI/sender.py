@@ -71,7 +71,8 @@ def send_result(result_data, video_filename=None):
                 timeout=2
             )
 
-            if response.status_code in [200, 201]:
+            # 204 means the simulated camera currently has no screw in FOV.
+            if response.status_code in [200, 201, 204]:
                 return True
             else:
                 print(f"Backend error: {response.status_code} - {response.text}")
