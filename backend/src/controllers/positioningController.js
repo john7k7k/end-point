@@ -37,20 +37,20 @@ export const getLatestPositioning = async (req, res) => {
     : await Detection.findOne({ operationId: req.params.operationId }).sort({ timestamp: -1 }) || virtualDetection;
   const latestTelemetry = getDeviceTelemetry();
   const savedOrientation = detection.deviceOrientation;
-  const telemetry = detection._id && detection.devicePosition && savedOrientation ? {
+  const recordedTelemetry = detection._id && detection.devicePosition && savedOrientation ? {
     position: detection.devicePosition,
     orientation: { roll: savedOrientation.x, pitch: savedOrientation.y, yaw: savedOrientation.z },
     updatedAt: detection.timestamp
   } : latestTelemetry;
   const cameraPosition = cameraCoordinate(detection);
-  const rotatedPoint = rotateByOrientation(cameraPosition, telemetry.orientation);
+  const rotatedPoint = rotateByOrientation(cameraPosition, recordedTelemetry.orientation);
   const calculatedAbsolutePosition = {
-    x: Number((telemetry.position.x + rotatedPoint.x).toFixed(3)),
-    y: Number((telemetry.position.y + rotatedPoint.y).toFixed(3)),
-    z: Number((telemetry.position.z + rotatedPoint.z).toFixed(3))
+    x: Number((recordedTelemetry.position.x + rotatedPoint.x).toFixed(3)),
+    y: Number((recordedTelemetry.position.y + rotatedPoint.y).toFixed(3)),
+    z: Number((recordedTelemetry.position.z + rotatedPoint.z).toFixed(3))
   };
   res.json({
-    telemetry,
+    telemetry: latestTelemetry,
     detection: { objectClass: detection.objectClass, bbox: detection.bbox, depth: detection.depth, detectionAlgorithm: detection.detectionAlgorithm || "mock_yolo" },
     cameraPosition: detection.cameraPosition || cameraPosition,
     absolutePosition: detection.absolutePosition || calculatedAbsolutePosition,

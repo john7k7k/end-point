@@ -3,38 +3,34 @@ import Operation from "../models/Operation.js";
 import Detection from "../models/Detection.js";
 import User from "../models/User.js";
 import { getSimulationConfigValue } from "../controllers/simulationController.js";
+import { getEsEkfState, predict, stepVirtual, updateUwb } from "../positioning/esEkf.js";
 
 const client = mqtt.connect("mqtt://localhost:1883");
 const AI_ENDPOINT = "http://localhost:8000/api/operation-update";
-let latestUwbPosition = null;
-let latestImuOrientation = null;
+let hasUwbRanges = false;
+let hasImuData = false;
 
-const validVector = (value) => value && [value.x, value.y, value.z].every(Number.isFinite);
-const virtualPosition = () => {
-  const time = Date.now() / 1000;
-  return { x: 1.2 + Math.sin(time * 0.7) * 0.18, y: 0.8 + Math.cos(time * 0.5) * 0.12, z: 1.45 + Math.sin(time * 0.35) * 0.06 };
+export const getDeviceTelemetry = () => {
+  if (!hasUwbRanges || !hasImuData) stepVirtual();
+  const filter = getEsEkfState();
+  return {
+    position: filter.position,
+    orientation: filter.orientation,
+    quaternion: filter.quaternion,
+    anchorCount: filter.anchorCount,
+    uwbRanges: filter.uwbRanges,
+    imu: filter.imu,
+    updatedAt: new Date().toISOString()
+  };
 };
-const virtualOrientation = () => {
-  const time = Date.now() / 1000;
-  return { roll: Math.sin(time * 0.8) * 8, pitch: Math.cos(time * 0.6) * 10, yaw: (time * 12) % 360 };
-};
-
-export const getDeviceTelemetry = () => ({
-  position: latestUwbPosition?.position || virtualPosition(),
-  orientation: latestImuOrientation?.orientation || virtualOrientation(),
-  positionSource: latestUwbPosition ? "mqtt" : "simulated",
-  orientationSource: latestImuOrientation ? "mqtt" : "simulated",
-  updatedAt: new Date().toISOString()
-});
 
 client.on("connect", () => {
   console.log("MQTT connected");
   client.subscribe("vision/operation/start", { qos: 2 });
   client.subscribe("vision/operation/end", { qos: 2 });
   client.subscribe("vision/detection", { qos: 2 });
-  client.subscribe("vision/uwb/position", { qos: 1 });
-  client.subscribe("vision/imu/orientation", { qos: 1 });
-  client.subscribe("vision/device/pose", { qos: 1 });
+  client.subscribe("vision/uwb/ranges", { qos: 1 });
+  client.subscribe("vision/imu/data", { qos: 1 });
   console.log("MQTT subscribed to vision/operation/start, vision/operation/end, and vision/detection");
 });
 
@@ -49,14 +45,12 @@ client.on("message", async (topic, message) => {
       await handleOperationEnd(data);
     } else if (topic === "vision/detection") {
       await handleDetection(data);
-    } else if (topic === "vision/uwb/position" && validVector(data.position || data)) {
-      latestUwbPosition = { position: data.position || data, timestamp: Date.now() };
-    } else if (topic === "vision/imu/orientation" && [data.orientation?.roll ?? data.roll ?? data.x, data.orientation?.pitch ?? data.pitch ?? data.y, data.orientation?.yaw ?? data.yaw ?? data.z].every(Number.isFinite)) {
-      const value = data.orientation || data;
-      latestImuOrientation = { orientation: { roll: value.roll ?? value.x, pitch: value.pitch ?? value.y, yaw: value.yaw ?? value.z }, timestamp: Date.now() };
-    } else if (topic === "vision/device/pose") {
-      if (validVector(data.position)) latestUwbPosition = { position: data.position, timestamp: Date.now() };
-      if (data.orientation && [data.orientation.roll, data.orientation.pitch, data.orientation.yaw].every(Number.isFinite)) latestImuOrientation = { orientation: data.orientation, timestamp: Date.now() };
+    } else if (topic === "vision/uwb/ranges" && Array.isArray(data.ranges)) {
+      updateUwb(data.ranges);
+      hasUwbRanges = true;
+    } else if (topic === "vision/imu/data" && data.acceleration && data.gyroscope) {
+      predict(data.acceleration, data.gyroscope);
+      hasImuData = true;
     }
   } catch (err) {
     console.error("MQTT parse error:", err);

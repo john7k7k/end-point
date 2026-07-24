@@ -1,5 +1,7 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
+import * as THREE from 'three';
+import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import api from '../api';
 
 const operations = ref([]), videos = ref([]), detections = ref([]);
@@ -7,7 +9,16 @@ const sourceMode = ref('history'), selectedOperationId = ref(''), selectedVideoN
 const viewMode = ref('color'), fusionAlgorithm = ref('ekf'), showDetections = ref(true);
 const currentTime = ref(0), duration = ref(0), isPlaying = ref(false), videoPlayer = ref(null);
 const positioning = ref(null), loading = ref(true), saving = ref(false), error = ref(''), message = ref('');
+const positionTrail = ref([]);
+const sceneContainer = ref(null), sceneTooltip = ref(null);
+const anchors = [
+  { id: 1, x: 0, y: 0, z: 0 }, { id: 2, x: 4, y: 0, z: 0 },
+  { id: 3, x: 0, y: 4, z: 0 }, { id: 4, x: 4, y: 4, z: 0 },
+  { id: 5, x: 0, y: 0, z: 2.5 }, { id: 6, x: 4, y: 0, z: 2.5 },
+  { id: 7, x: 0, y: 4, z: 2.5 }, { id: 8, x: 4, y: 4, z: 2.5 }
+];
 let positionTimer;
+let renderer, scene, camera, controls, deviceGroup, screwGroup, trailLine, raycaster, pointer, sceneFrame, resizeObserver;
 
 const activeOperation = computed(() => operations.value
   .filter((operation) => !operation.endTime)
@@ -42,6 +53,54 @@ const cubeStyle = computed(() => {
   return { transform: `rotateX(${o.roll}deg) rotateY(${o.pitch}deg) rotateZ(${o.yaw}deg)` };
 });
 const format = (value) => Number(value ?? 0).toFixed(3);
+const toScenePosition = (point) => new THREE.Vector3(Number(point?.x || 0), Number(point?.z || 0), Number(point?.y || 0));
+const anchorPosition = (anchor) => toScenePosition(anchor);
+const addHoverTarget = (object, label) => { object.userData.hoverLabel = label; };
+const createAnchorIcon = (anchor) => {
+  const group = new THREE.Group();
+  const material = new THREE.MeshStandardMaterial({ color: 0x3b82f6, roughness: .35, metalness: .35 });
+  const base = new THREE.Mesh(new THREE.CylinderGeometry(.12, .18, .08, 16), material);
+  const mast = new THREE.Mesh(new THREE.CylinderGeometry(.035, .035, .23, 10), material);
+  mast.position.y = .14; group.add(base, mast); group.position.copy(anchorPosition(anchor));
+  addHoverTarget(group, `基地站 ${anchor.id}：X ${anchor.x}、Y ${anchor.y}、Z ${anchor.z} m`); return group;
+};
+const createScrewIcon = () => {
+  const group = new THREE.Group(); const material = new THREE.MeshStandardMaterial({ color: 0xf59e0b, metalness: .72, roughness: .25 });
+  const body = new THREE.Mesh(new THREE.CylinderGeometry(.045, .045, .25, 16), material); body.rotation.z = Math.PI / 2;
+  const head = new THREE.Mesh(new THREE.CylinderGeometry(.105, .105, .045, 16), material); head.rotation.z = Math.PI / 2; head.position.x = -.14;
+  group.add(body, head); return group;
+};
+const updateThreeScene = () => {
+  if (!scene || !positioning.value || !deviceGroup || !screwGroup) return;
+  const telemetry = positioning.value.telemetry;
+  deviceGroup.position.copy(toScenePosition(telemetry.position));
+  const radians = Math.PI / 180, o = telemetry.orientation;
+  deviceGroup.rotation.set(o.pitch * radians, -o.yaw * radians, o.roll * radians, 'YXZ');
+  screwGroup.position.copy(toScenePosition(positioning.value.absolutePosition));
+  addHoverTarget(deviceGroup, `設備：X ${format(telemetry.position.x)}、Y ${format(telemetry.position.y)}、Z ${format(telemetry.position.z)} m；Roll ${format(o.roll)}°、Pitch ${format(o.pitch)}°、Yaw ${format(o.yaw)}°`);
+  addHoverTarget(screwGroup, `螺絲：X ${format(positioning.value.absolutePosition.x)}、Y ${format(positioning.value.absolutePosition.y)}、Z ${format(positioning.value.absolutePosition.z)} m`);
+  const geometry = new THREE.BufferGeometry().setFromPoints(positionTrail.value.map(toScenePosition));
+  trailLine.geometry.dispose(); trailLine.geometry = geometry;
+};
+const initThreeScene = async () => {
+  await nextTick(); if (renderer || !sceneContainer.value) { updateThreeScene(); return; }
+  scene = new THREE.Scene(); scene.background = new THREE.Color(0xffffff);
+  camera = new THREE.PerspectiveCamera(42, 1, .1, 100); camera.position.set(7.2, 6.4, 8.2);
+  renderer = new THREE.WebGLRenderer({ antialias: true }); renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2)); sceneContainer.value.appendChild(renderer.domElement);
+  controls = new OrbitControls(camera, renderer.domElement); controls.target.set(2, 1.1, 2); controls.enableDamping = true; controls.minDistance = 4; controls.maxDistance = 14;
+  scene.add(new THREE.HemisphereLight(0xffffff, 0xcbd5e1, 2)); const light = new THREE.DirectionalLight(0xffffff, 2.5); light.position.set(5, 7, 4); scene.add(light);
+  const floor = new THREE.Mesh(new THREE.PlaneGeometry(4.8, 4.8), new THREE.MeshStandardMaterial({ color: 0xf8fafc, roughness: .95 })); floor.rotation.x = -Math.PI / 2; floor.position.set(2, -.02, 2); scene.add(floor);
+  const grid = new THREE.GridHelper(4.8, 12, 0xcbd5e1, 0xe2e8f0); grid.position.set(2, 0, 2); scene.add(grid);
+  anchors.forEach((anchor) => scene.add(createAnchorIcon(anchor)));
+  deviceGroup = new THREE.Group(); const deviceDot = new THREE.Mesh(new THREE.SphereGeometry(.12, 20, 16), new THREE.MeshStandardMaterial({ color: 0x10b981, emissive: 0x046c4e, emissiveIntensity: .35 })); const beam = new THREE.Mesh(new THREE.ConeGeometry(.45, 1.2, 24, 1, true), new THREE.MeshBasicMaterial({ color: 0x34d399, transparent: true, opacity: .2, side: THREE.DoubleSide })); beam.rotation.x = -Math.PI / 2; beam.position.z = -.6; deviceGroup.add(deviceDot, beam); scene.add(deviceGroup);
+  screwGroup = createScrewIcon(); scene.add(screwGroup); trailLine = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0xdc2626, linewidth: 1 })); scene.add(trailLine);
+  raycaster = new THREE.Raycaster(); pointer = new THREE.Vector2(); renderer.domElement.addEventListener('pointermove', showSceneTooltip);
+  resizeObserver = new ResizeObserver(resizeThreeScene); resizeObserver.observe(sceneContainer.value); resizeThreeScene(); updateThreeScene(); renderThreeScene();
+};
+const resizeThreeScene = () => { if (!renderer || !sceneContainer.value) return; const { clientWidth: width, clientHeight: height } = sceneContainer.value; if (!width || !height) return; renderer.setSize(width, height); camera.aspect = width / height; camera.updateProjectionMatrix(); };
+const showSceneTooltip = (event) => { if (!renderer || !sceneTooltip.value) return; const rect = renderer.domElement.getBoundingClientRect(); pointer.set(((event.clientX - rect.left) / rect.width) * 2 - 1, -((event.clientY - rect.top) / rect.height) * 2 + 1); raycaster.setFromCamera(pointer, camera); const found = raycaster.intersectObjects(scene.children, true).map((hit) => { let object = hit.object; while (object && !object.userData.hoverLabel) object = object.parent; return object; }).find(Boolean); sceneTooltip.value.style.display = found ? 'block' : 'none'; if (found) { sceneTooltip.value.textContent = found.userData.hoverLabel; sceneTooltip.value.style.left = `${event.clientX - rect.left + 12}px`; sceneTooltip.value.style.top = `${event.clientY - rect.top + 12}px`; } };
+const renderThreeScene = () => { sceneFrame = requestAnimationFrame(renderThreeScene); controls.update(); renderer.render(scene, camera); };
+const disposeThreeScene = () => { cancelAnimationFrame(sceneFrame); resizeObserver?.disconnect(); renderer?.domElement?.removeEventListener('pointermove', showSceneTooltip); renderer?.dispose(); renderer = null; };
 
 const loadHistory = async () => {
   videos.value = []; detections.value = []; selectedVideoName.value = ''; currentTime.value = 0;
@@ -59,6 +118,11 @@ const refreshPositioning = async () => {
   try {
     const params = activeDetection.value._id !== 'simulated-screw' ? { detectionId: activeDetection.value._id } : {};
     positioning.value = (await api.get(`/positioning/latest/${selectedOperationId.value}`, { params })).data;
+    const point = positioning.value.telemetry?.position;
+    if (point && (!positionTrail.value.length || JSON.stringify(positionTrail.value.at(-1)) !== JSON.stringify(point))) {
+      positionTrail.value = [...positionTrail.value.slice(-39), { ...point }];
+    }
+    await initThreeScene(); updateThreeScene();
   } catch (err) { error.value = err.response?.data?.error || '無法讀取定位資料。'; }
 };
 const refreshLiveDetections = async () => {
@@ -77,7 +141,7 @@ const updatePlayback = (event) => { currentTime.value = event.target.currentTime
 const togglePlayback = async () => { if (videoPlayer.value?.paused) await videoPlayer.value.play(); else videoPlayer.value?.pause(); };
 const seek = (event) => { if (videoPlayer.value) videoPlayer.value.currentTime = Number(event.target.value); };
 
-watch(selectedOperationId, () => { if (sourceMode.value === 'history') loadHistory(); else refreshPositioning(); });
+watch(selectedOperationId, () => { positionTrail.value = []; if (sourceMode.value === 'history') loadHistory(); else refreshPositioning(); });
 watch(viewMode, () => { selectedVideoName.value = modeVideos.value[0]?.filename || ''; currentTime.value = 0; });
 watch(sourceMode, () => {
   selectedOperationId.value = sourceMode.value === 'live' ? activeOperation.value?._id || '' : historyOperations.value[0]?._id || '';
@@ -92,7 +156,7 @@ onMounted(async () => {
   } catch { error.value = '無法讀取系統資料。'; }
   finally { loading.value = false; }
 });
-onUnmounted(() => window.clearInterval(positionTimer));
+onUnmounted(() => { window.clearInterval(positionTimer); disposeThreeScene(); });
 </script>
 
 <template>
@@ -117,10 +181,13 @@ onUnmounted(() => window.clearInterval(positionTimer));
         <p v-else class="placeholder">此作業尚未找到歷史影片。</p>
       </div>
       <aside class="stream-sidebar">
-        <section class="side-section"><h3>融合設定</h3><label>融合演算法<select v-model="fusionAlgorithm"><option value="ekf">Extended Kalman Filter (EKF)</option><option value="complementary">Complementary Filter</option><option value="weighted_average">Weighted Average</option></select></label><button type="button" :disabled="saving" @click="saveFusion">{{ saving ? '傳送中…' : '套用融合設定' }}</button></section>
-        <template v-if="positioning"><section class="side-section"><h3>設備位置</h3><p>X {{ format(positioning.telemetry.position.x) }}　Y {{ format(positioning.telemetry.position.y) }}　Z {{ format(positioning.telemetry.position.z) }} m</p></section><section class="side-section"><h3>設備姿態</h3><div class="orientation-scene"><div class="orientation-cube" :style="cubeStyle">設備</div></div><p>Roll {{ format(positioning.telemetry.orientation.roll) }}°<br>Pitch {{ format(positioning.telemetry.orientation.pitch) }}°<br>Yaw {{ format(positioning.telemetry.orientation.yaw) }}°</p></section><section class="side-section"><h3>螺絲定位</h3><p>{{ displayName }}　深度 {{ activeDetection.depth }}</p><p>模型：{{ positioning.detection.detectionAlgorithm }}<br>融合：{{ positioning.fusionAlgorithm }}</p><p>相機：{{ format(positioning.cameraPosition.x) }}, {{ format(positioning.cameraPosition.y) }}, {{ format(positioning.cameraPosition.z) }} m</p><p class="absolute-position">絕對：{{ format(positioning.absolutePosition.x) }}, {{ format(positioning.absolutePosition.y) }}, {{ format(positioning.absolutePosition.z) }} m</p></section></template>
+        <section v-if="positioning" class="side-section screw-position-card"><h3>螺絲定位</h3><p>{{ displayName }}　深度 {{ activeDetection.depth }}</p><p>模型：{{ positioning.detection.detectionAlgorithm }}<br>融合：{{ positioning.fusionAlgorithm }}</p><p>相機座標：{{ format(positioning.cameraPosition.x) }}, {{ format(positioning.cameraPosition.y) }}, {{ format(positioning.cameraPosition.z) }} m</p><p class="absolute-position">融合絕對座標：{{ format(positioning.absolutePosition.x) }}, {{ format(positioning.absolutePosition.y) }}, {{ format(positioning.absolutePosition.z) }} m</p></section>
       </aside>
     </div>
+    <section v-if="positioning" class="telemetry-dashboard">
+      <div class="position-scene-card"><div class="scene-heading"><div><p class="eyebrow">Three.js 3D Position View</p><h3>設備軌跡與作業空間</h3></div><span>拖曳可旋轉、滾輪可縮放；停留於圖示可查看座標</span></div><div ref="sceneContainer" class="three-scene"><div ref="sceneTooltip" class="three-tooltip"></div></div><div class="scene-legend"><span><i class="legend-anchor"></i>基地站</span><span><i class="legend-device"></i>設備／攝影機光錐</span><span><i class="legend-screw"></i>螺絲</span><span><i class="legend-trail"></i>移動軌跡</span></div></div>
+      <aside class="fusion-data-card"><h3>UWB + IMU 融合資料</h3><div class="current-position"><strong>ES-EKF 輸出設備位置</strong><span>X {{ format(positioning.telemetry.position.x) }}　Y {{ format(positioning.telemetry.position.y) }}　Z {{ format(positioning.telemetry.position.z) }} m</span></div><div class="sensor-columns"><div><h4>UWB：8 個基地站距離（m）</h4><div class="uwb-range-grid"><span v-for="range in (positioning.telemetry.uwbRanges || [])" :key="range.stationId">站 {{ range.stationId + 1 }}：{{ format(range.distance) }}</span></div></div><div class="imu-readout"><h4>IMU 即時量測</h4><p>加速度：{{ format(positioning.telemetry.imu?.acceleration?.x) }}, {{ format(positioning.telemetry.imu?.acceleration?.y) }}, {{ format(positioning.telemetry.imu?.acceleration?.z) }} m/s²</p><p>角速度：{{ format(positioning.telemetry.imu?.gyroscope?.x) }}, {{ format(positioning.telemetry.imu?.gyroscope?.y) }}, {{ format(positioning.telemetry.imu?.gyroscope?.z) }} °/s</p><p>姿態：Roll {{ format(positioning.telemetry.orientation.roll) }}°、Pitch {{ format(positioning.telemetry.orientation.pitch) }}°、Yaw {{ format(positioning.telemetry.orientation.yaw) }}°</p></div></div><label>UWB + IMU 融合演算法<select v-model="fusionAlgorithm"><option value="ekf">Error-State Extended Kalman Filter (ES-EKF)</option><option value="complementary">Complementary Filter</option><option value="weighted_average">Weighted Average</option></select></label><button type="button" :disabled="saving" @click="saveFusion">{{ saving ? '傳送中…' : '套用融合設定' }}</button></aside>
+    </section>
     <p v-if="message" class="success">{{ message }}</p><p v-if="error" class="alert">{{ error }}</p>
   </section>
 </template>
