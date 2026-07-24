@@ -1,5 +1,7 @@
 param(
-    [switch]$Stop
+    [switch]$Stop,
+    [switch]$Reboot,
+    [switch]$NoLog
 )
 
 $ErrorActionPreference = 'Stop'
@@ -43,10 +45,18 @@ function Stop-ManagedServices {
     }
 }
 
+if ($Stop -and $Reboot) {
+    throw 'Use either -Stop or -Reboot, not both.'
+}
+
+# Starting without switches keeps the existing safe behaviour: replace any old services.
 Stop-ManagedServices
 if ($Stop) {
     Write-Host 'Managed services stopped.'
     exit 0
+}
+if ($Reboot) {
+    Write-Host 'Managed services restarted.'
 }
 
 if (-not (Test-Path $MediaMtxExecutable)) {
@@ -61,10 +71,21 @@ function Start-LoggedProcess {
         [string]$WorkingDirectory
     )
 
-    $output = Join-Path $RuntimeDirectory "$Name.out.log"
-    $error = Join-Path $RuntimeDirectory "$Name.err.log"
-    Remove-Item -Force $output, $error -ErrorAction SilentlyContinue
-    return Start-Process -FilePath $FilePath -ArgumentList $ArgumentList -WorkingDirectory $WorkingDirectory -WindowStyle Hidden -PassThru -RedirectStandardOutput $output -RedirectStandardError $error
+    $startParameters = @{
+        FilePath = $FilePath
+        ArgumentList = $ArgumentList
+        WorkingDirectory = $WorkingDirectory
+        WindowStyle = 'Hidden'
+        PassThru = $true
+    }
+    if (-not $NoLog) {
+        $output = Join-Path $RuntimeDirectory "$Name.out.log"
+        $error = Join-Path $RuntimeDirectory "$Name.err.log"
+        Remove-Item -Force $output, $error -ErrorAction SilentlyContinue
+        $startParameters.RedirectStandardOutput = $output
+        $startParameters.RedirectStandardError = $error
+    }
+    return Start-Process @startParameters
 }
 
 $services = [ordered]@{}
@@ -77,4 +98,5 @@ Start-Sleep -Seconds 1
 
 $services | ConvertTo-Json | Set-Content -Encoding utf8 $PidFile
 Write-Host 'Started MediaMTX, backend, and AI.'
-Write-Host "Logs: $RuntimeDirectory"
+if ($NoLog) { Write-Host 'Log output is disabled.' }
+else { Write-Host "Logs: $RuntimeDirectory" }
