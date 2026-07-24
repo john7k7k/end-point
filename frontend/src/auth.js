@@ -7,4 +7,5 @@ export const isAuthenticated = computed(() => Boolean(session.value?.token));
 export const currentUser = computed(() => session.value?.user || null);
 
 export const setSession = (nextSession) => { session.value = nextSession; localStorage.setItem(storageKey, JSON.stringify(nextSession)); };
+export const updateCurrentUser = (user) => { if (session.value) setSession({ ...session.value, user }); };
 export const logout = () => { session.value = null; localStorage.removeItem(storageKey); };

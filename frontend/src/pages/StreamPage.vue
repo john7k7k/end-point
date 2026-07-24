@@ -9,6 +9,7 @@ const sourceMode = ref('history'), selectedOperationId = ref(''), selectedVideoN
 const viewMode = ref('color'), fusionAlgorithm = ref('ekf'), showDetections = ref(true);
 const currentTime = ref(0), duration = ref(0), isPlaying = ref(false), videoPlayer = ref(null);
 const positioning = ref(null), loading = ref(true), saving = ref(false), error = ref(''), message = ref('');
+const simulationTick = ref(0);
 const positionTrail = ref([]);
 const sceneContainer = ref(null), sceneTooltip = ref(null);
 const anchors = [
@@ -40,9 +41,10 @@ const selectedVideoDetections = computed(() => {
   return matched.length ? matched : detections.value;
 });
 const simulatedScrew = computed(() => ({
-  _id: 'simulated-screw', objectClass: '螺絲', depth: 120,
-  bbox: { x: 860, y: 465, width: 200, height: 150 }
+  _id: 'simulated-screw', objectClass: '螺絲', depth: Number((118 + Math.sin(simulationTick.value * .18) * 3).toFixed(1)),
+  bbox: { x: Math.round(860 + Math.sin(simulationTick.value * .14) * 22), y: Math.round(465 + Math.cos(simulationTick.value * .11) * 12), width: 200, height: 150 }
 }));
+const virtualDetectionVisible = computed(() => Math.floor((simulationTick.value + 20) / 4) % 13 !== 0);
 const activeDetection = computed(() => {
   if (sourceMode.value === 'live') return detections.value.at(-1) || simulatedScrew.value;
   if (!selectedVideoDetections.value.length) return simulatedScrew.value;
@@ -53,6 +55,9 @@ const activeDetection = computed(() => {
     Math.abs(new Date(item.timestamp).getTime() - target) < Math.abs(new Date(closest.timestamp).getTime() - target) ? item : closest
   );
 });
+const hasStoredDetection = computed(() => sourceMode.value === 'live' ? detections.value.length > 0 : selectedVideoDetections.value.length > 0);
+const hasVisibleMedia = computed(() => sourceMode.value === 'live' ? Boolean(activeOperation.value) : Boolean(selectedVideo.value));
+const showDetectionOverlay = computed(() => showDetections.value && hasVisibleMedia.value && (hasStoredDetection.value || virtualDetectionVisible.value));
 const displayName = computed(() => ['example_object', 'screw_simulated'].includes(activeDetection.value.objectClass) ? '螺絲' : activeDetection.value.objectClass);
 const liveStreamUrl = computed(() => `http://localhost:8889/${viewMode.value === 'depth' ? 'cam-depth' : 'cam-color'}`);
 const cubeStyle = computed(() => {
@@ -129,6 +134,7 @@ const loadHistory = async () => {
     await refreshPositioning();
   } catch (err) { error.value = err.response?.data?.error || '無法讀取歷史影片或偵測資料。'; }
 };
+const refreshOperations = async () => { operations.value = (await api.get('/operations')).data; };
 const refreshPositioning = async () => {
   if (!selectedOperationId.value) return;
   try {
@@ -159,16 +165,22 @@ const seek = (event) => { if (videoPlayer.value) videoPlayer.value.currentTime =
 
 watch(selectedOperationId, () => { positionTrail.value = []; if (sourceMode.value === 'history') loadHistory(); else refreshPositioning(); });
 watch(viewMode, () => { selectedVideoName.value = modeVideos.value[0]?.filename || ''; currentTime.value = 0; });
-watch(sourceMode, () => {
-  selectedOperationId.value = sourceMode.value === 'live' ? activeOperation.value?._id || '' : historyOperations.value[0]?._id || '';
-  if (sourceMode.value === 'live') { refreshLiveDetections(); refreshPositioning(); }
+watch(sourceMode, async () => {
+  if (sourceMode.value === 'history') {
+    await refreshOperations();
+    selectedOperationId.value = historyOperations.value[0]?._id || '';
+    if (!selectedOperationId.value) { videos.value = []; detections.value = []; positioning.value = null; }
+  } else {
+    selectedOperationId.value = activeOperation.value?._id || '';
+    refreshLiveDetections(); refreshPositioning();
+  }
 });
 onMounted(async () => {
   try {
     const [ops, config] = await Promise.all([api.get('/operations'), api.get('/simulation/config')]);
     operations.value = ops.data; fusionAlgorithm.value = config.data.fusionAlgorithm;
     selectedOperationId.value = historyOperations.value[0]?._id || '';
-    positionTimer = window.setInterval(async () => { await refreshLiveDetections(); await refreshPositioning(); }, 1000);
+    positionTimer = window.setInterval(async () => { simulationTick.value += 1; await refreshLiveDetections(); await refreshPositioning(); }, 500);
   } catch { error.value = '無法讀取系統資料。'; }
   finally { loading.value = false; }
 });
@@ -181,23 +193,23 @@ onUnmounted(() => { window.clearInterval(positionTimer); disposeThreeScene(); })
     <div class="media-controls">
       <div class="segmented-control"><button :class="{ active: sourceMode === 'history' }" type="button" @click="sourceMode = 'history'">歷史影片</button><button :class="{ active: sourceMode === 'live' }" type="button" @click="sourceMode = 'live'">目前串流</button></div>
       <p v-if="sourceMode === 'live'" class="stream-start-time">開始時間：{{ liveStartTime }}</p>
-      <template v-else><label>作業<select v-model="selectedOperationId"><option v-if="historyOperations.length" value="" disabled>選擇歷史作業</option><option v-for="op in historyOperations" :key="op._id" :value="op._id">{{ new Date(op.startTime).toLocaleString('zh-TW') }}</option></select></label><label>影片<select v-model="selectedVideoName" :disabled="!modeVideos.length"><option v-for="video in modeVideos" :key="video.filename" :value="video.filename">{{ video.filename }}</option></select></label></template>
+      <template v-else><label>作業<select v-model="selectedOperationId" :disabled="!historyOperations.length"><option v-if="!historyOperations.length" value="">無歷史紀錄</option><option v-else value="" disabled>選擇歷史作業</option><option v-for="op in historyOperations" :key="op._id" :value="op._id">{{ new Date(op.startTime).toLocaleString('zh-TW') }}</option></select></label><label class="video-select-control">影片<select v-model="selectedVideoName" :disabled="!modeVideos.length"><option v-if="!modeVideos.length" value="">無歷史紀錄</option><option v-for="video in modeVideos" :key="video.filename" :value="video.filename">{{ video.filename }}</option></select></label></template>
       <label class="switch-control"><input v-model="showDetections" type="checkbox" /> 顯示螺絲偵測</label>
       <div class="segmented-control"><button :class="{ active: viewMode === 'color' }" type="button" @click="viewMode = 'color'">光學影像</button><button :class="{ active: viewMode === 'depth' }" type="button" @click="viewMode = 'depth'">深度影像</button></div>
     </div>
     <p v-if="loading" class="placeholder">正在讀取資料…</p>
     <div v-else class="stream-workspace">
       <div class="stream-main">
-        <div v-if="sourceMode === 'live'" class="video-viewport"><iframe :key="liveStreamUrl" class="live-stream-frame" :src="liveStreamUrl" :title="viewMode === 'depth' ? '目前深度串流' : '目前光學串流'" allow="autoplay; fullscreen"></iframe><div v-if="showDetections" class="detection-layer"><div class="detection-box" :class="{ 'label-below': activeDetection.bbox.y < 30 }" :style="{ left: `${(activeDetection.bbox.x / 1920) * 100}%`, top: `${(activeDetection.bbox.y / 1080) * 100}%`, width: `${(activeDetection.bbox.width / 1920) * 100}%`, height: `${(activeDetection.bbox.height / 1080) * 100}%` }"><span>{{ displayName }} · {{ activeDetection.depth }}</span></div></div></div>
+        <div v-if="sourceMode === 'live'" class="video-viewport"><iframe :key="liveStreamUrl" class="live-stream-frame" :src="liveStreamUrl" :title="viewMode === 'depth' ? '目前深度串流' : '目前光學串流'" allow="autoplay; fullscreen"></iframe><div v-if="showDetectionOverlay" class="detection-layer"><div class="detection-box" :class="{ 'label-below': activeDetection.bbox.y < 30 }" :style="{ left: `${(activeDetection.bbox.x / 1920) * 100}%`, top: `${(activeDetection.bbox.y / 1080) * 100}%`, width: `${(activeDetection.bbox.width / 1920) * 100}%`, height: `${(activeDetection.bbox.height / 1080) * 100}%` }"><span>{{ displayName }} · {{ activeDetection.depth }}</span></div></div></div>
         <div v-else-if="selectedVideo" class="video-viewport">
           <video :key="selectedVideo.filename" ref="videoPlayer" class="video-source" :class="{ 'show-depth': selectedVideo.kind === 'combined' && viewMode === 'depth' }" :src="selectedVideo.url" playsinline @loadedmetadata="updatePlayback" @timeupdate="updatePlayback" @play="isPlaying = true" @pause="isPlaying = false" />
-          <div v-if="showDetections" class="detection-layer"><div class="detection-box" :class="{ 'label-below': activeDetection.bbox.y < 30 }" :style="{ left: `${(activeDetection.bbox.x / 1920) * 100}%`, top: `${(activeDetection.bbox.y / 1080) * 100}%`, width: `${(activeDetection.bbox.width / 1920) * 100}%`, height: `${(activeDetection.bbox.height / 1080) * 100}%` }"><span>{{ displayName }} · {{ activeDetection.depth }}</span></div></div>
+          <div v-if="showDetectionOverlay" class="detection-layer"><div class="detection-box" :class="{ 'label-below': activeDetection.bbox.y < 30 }" :style="{ left: `${(activeDetection.bbox.x / 1920) * 100}%`, top: `${(activeDetection.bbox.y / 1080) * 100}%`, width: `${(activeDetection.bbox.width / 1920) * 100}%`, height: `${(activeDetection.bbox.height / 1080) * 100}%` }"><span>{{ displayName }} · {{ activeDetection.depth }}</span></div></div>
           <div class="video-playback-controls"><button type="button" @click="togglePlayback">{{ isPlaying ? '暫停' : '播放' }}</button><input type="range" min="0" :max="duration" step="0.01" :value="currentTime" @input="seek" /><span>{{ Math.floor(currentTime) }} / {{ Math.floor(duration) }} 秒</span></div>
         </div>
         <p v-else class="placeholder">此作業尚未找到歷史影片。</p>
       </div>
       <aside class="stream-sidebar">
-        <section v-if="positioning" class="side-section screw-position-card"><h3>螺絲定位</h3><p>{{ displayName }}　深度 {{ activeDetection.depth }}</p><p>模型：{{ positioning.detection.detectionAlgorithm }}<br>融合：{{ positioning.fusionAlgorithm }}</p><p>相機座標：{{ format(positioning.cameraPosition.x) }}, {{ format(positioning.cameraPosition.y) }}, {{ format(positioning.cameraPosition.z) }} m</p><p class="absolute-position">融合絕對座標：{{ format(positioning.absolutePosition.x) }}, {{ format(positioning.absolutePosition.y) }}, {{ format(positioning.absolutePosition.z) }} m</p></section>
+        <section v-if="positioning" class="side-section screw-position-card"><h3>螺絲定位</h3><p>{{ displayName }}　深度 {{ activeDetection.depth }}</p><p>模型：{{ positioning.detection.detectionAlgorithm }}<br>融合：{{ positioning.fusionAlgorithm }}</p><p>相機／設備座標：{{ format(positioning.cameraPosition.x) }}, {{ format(positioning.cameraPosition.y) }}, {{ format(positioning.cameraPosition.z) }} m</p><p>螺絲相機座標：{{ format(positioning.screwCameraPosition.x) }}, {{ format(positioning.screwCameraPosition.y) }}, {{ format(positioning.screwCameraPosition.z) }} m</p><p class="absolute-position">融合絕對座標：{{ format(positioning.absolutePosition.x) }}, {{ format(positioning.absolutePosition.y) }}, {{ format(positioning.absolutePosition.z) }} m</p></section>
       </aside>
     </div>
     <section v-if="positioning" class="telemetry-dashboard">

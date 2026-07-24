@@ -52,7 +52,11 @@ export const getLatestPositioning = async (req, res) => {
   res.json({
     telemetry: latestTelemetry,
     detection: { objectClass: detection.objectClass, bbox: detection.bbox, depth: detection.depth, detectionAlgorithm: detection.detectionAlgorithm || "mock_yolo" },
-    cameraPosition: detection.cameraPosition || cameraPosition,
+    // The camera origin is attached to the device, therefore it always follows the
+    // latest UWB + IMU fused device pose.  Keep the screw's relative camera frame
+    // coordinate separately to avoid mixing the two coordinate systems.
+    cameraPosition: latestTelemetry.position,
+    screwCameraPosition: detection.cameraPosition || cameraPosition,
     absolutePosition: detection.absolutePosition || calculatedAbsolutePosition,
     fusionAlgorithm: detection.fusionAlgorithm || getSimulationConfigValue().fusionAlgorithm,
     workspace: latestTelemetry.workspace

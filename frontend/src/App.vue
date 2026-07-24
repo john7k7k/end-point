@@ -1,10 +1,11 @@
 <script setup>
 import { RouterView, RouterLink, useRoute, useRouter } from 'vue-router';
-import { computed } from 'vue';
+import { computed, ref } from 'vue';
 import { currentUser, isAuthenticated, logout } from './auth';
 
 const route = useRoute();
 const router = useRouter();
+const isLightTheme = ref(localStorage.getItem('vision-portal-theme') === 'light');
 
 const navGroups = [
   {
@@ -44,19 +45,21 @@ const currentTitle = computed(() => {
   const matched = navGroups.flatMap((group) => group.items).find((item) => item.to === route.path);
   return matched?.label || '首頁';
 });
-const openLogin = () => router.push('/account/login');
+const openAccount = (mode = 'login') => router.push({ path: '/account/login', query: { mode } });
 const signOut = () => { logout(); router.push('/guide'); };
+const toggleTheme = () => { isLightTheme.value = !isLightTheme.value; localStorage.setItem('vision-portal-theme', isLightTheme.value ? 'light' : 'dark'); };
 </script>
 
 <template>
-  <div class="app-shell">
+  <div class="app-shell" :class="{ 'theme-light': isLightTheme }">
     <aside class="sidebar">
       <div class="brand">
         <div class="brand-mark">V</div>
-        <div>
+        <div class="brand-content">
           <p class="brand-eyebrow">終端定位平台</p>
-          <div class="brand-title-row"><h2>Vision Portal</h2><div v-if="isAuthenticated" class="brand-user-actions"><span>{{ currentUser?.name }}</span><button type="button" class="brand-logout" @click="signOut">登出</button></div><button v-else type="button" class="brand-login" @click="openLogin">登入</button></div>
+          <div class="brand-title-row"><h2>Vision Portal</h2></div>
         </div>
+        <div v-if="isAuthenticated" class="brand-account-actions"><RouterLink class="user-avatar" to="/account/profile">{{ currentUser?.name?.charAt(0).toUpperCase() }}</RouterLink><div class="account-hover-card"><strong>{{ currentUser?.name }}</strong><span>{{ currentUser?.email }}</span><small>點擊頭貼查看帳戶資料</small></div></div><div v-else class="brand-account-actions"><button type="button" class="brand-login" @click="openAccount('login')">登入</button></div>
       </div>
 
       <nav class="nav-section" v-for="group in visibleNavGroups" :key="group.title">
@@ -70,11 +73,8 @@ const signOut = () => { logout(); router.push('/guide'); };
 
     <main class="main-panel">
       <header class="topbar">
-        <div>
-          <p class="eyebrow">{{ currentTitle }}</p>
-          <h1>終端定位系統管理介面</h1>
-        </div>
-        <div class="topbar-badge">已連線</div>
+        <h1>{{ currentTitle }}</h1>
+        <div class="topbar-actions"><button type="button" class="theme-toggle" @click="toggleTheme">{{ isLightTheme ? '◐ 夜間' : '☀ 白天' }}</button><div class="topbar-badge">已連線</div></div>
       </header>
       <RouterView />
     </main>

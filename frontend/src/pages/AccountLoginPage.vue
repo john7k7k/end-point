@@ -1,17 +1,18 @@
 <script setup>
-import { reactive, ref } from 'vue';
+import { reactive, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import api from '../api';
 import { setSession } from '../auth';
 
 const router = useRouter();
 const route = useRoute();
-const mode = ref('login');
+const mode = ref(route.query.mode === 'register' ? 'register' : 'login');
 const submitting = ref(false);
 const error = ref('');
 const form = reactive({ name: '', email: '', password: '', confirmPassword: '' });
 
 const switchMode = () => { mode.value = mode.value === 'login' ? 'register' : 'login'; error.value = ''; form.password = ''; form.confirmPassword = ''; };
+watch(() => route.query.mode, (nextMode) => { if (nextMode === 'register' || nextMode === 'login') mode.value = nextMode; });
 const submit = async () => {
   error.value = '';
   if (mode.value === 'register' && form.password !== form.confirmPassword) { error.value = '兩次輸入的密碼不一致。'; return; }

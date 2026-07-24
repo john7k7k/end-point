@@ -20,7 +20,14 @@ export const getUser = async (req, res) => {
 };
 
 export const updateUser = async (req, res) => {
-  res.json(await User.findByIdAndUpdate(req.params.id, req.body, { returnDocument: 'after' }));
+  try {
+    const updates = {};
+    if (typeof req.body.name === "string" && req.body.name.trim()) updates.name = req.body.name.trim();
+    if (typeof req.body.email === "string" && req.body.email.trim()) updates.email = req.body.email.trim().toLowerCase();
+    const user = await User.findByIdAndUpdate(req.params.id, updates, { returnDocument: 'after', runValidators: true });
+    if (!user) return res.status(404).json({ error: "User not found" });
+    res.json(safeUser(user));
+  } catch (err) { res.status(400).json({ error: err.code === 11000 ? "此電子信箱已被使用。" : err.message }); }
 };
 
 export const deleteUser = async (req, res) => {

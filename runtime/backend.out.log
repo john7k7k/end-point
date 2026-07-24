@@ -1,0 +1,18 @@
+Frontend dist path: D:\ncku\末端定位技術\code\frontend\dist
+Frontend dist exists: true
+MongoDB connected
+Server running on port 3000
+MQTT connected
+MQTT subscribed to vision/operation/start, vision/operation/end, and vision/detection
+MQTT message received on vision/operation/start: {"userId": "6a63c329aa143d129866cf98"}
+📨 Received MQTT message on vision/operation/start: { userId: '6a63c329aa143d129866cf98' }
+Operation created: 6a63d2fa2c8ce4bb05a2b10f
+ACK sent to vision/operation/ack/6a63c329aa143d129866cf98
+✓ Operation ID sent to AI endpoint: 6a63d2fa2c8ce4bb05a2b10f
+MQTT message received on vision/operation/end: {"opID": "6a63d2fa2c8ce4bb05a2b10f", "endTime": "2026-07-24T21:03:38Z", "description": "Stopped from test2"}
+📨 Received MQTT message on vision/operation/end: {
+  opID: '6a63d2fa2c8ce4bb05a2b10f',
+  endTime: '2026-07-24T21:03:38Z',
+  description: 'Stopped from test2'
+}
+Operation ended: 6a63d2fa2c8ce4bb05a2b10f
