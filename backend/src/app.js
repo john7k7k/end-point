@@ -6,6 +6,7 @@ import { fileURLToPath } from "url";
 import { connectDB } from "./db.js";
 import "./mqtt/mqttClient.js";
 import userRoutes from "./routes/userRoutes.js";
+import authRoutes from "./routes/authRoutes.js";
 import operationRoutes from "./routes/operationRoutes.js";
 import detectionRoutes from "./routes/detectionRoutes.js";
 import deviceRoutes from "./routes/deviceRoutes.js";
@@ -24,6 +25,7 @@ app.use(cors());
 app.use(express.json());
 
 app.use("/api/users", userRoutes);
+app.use("/api/auth", authRoutes);
 app.use("/api/operations", operationRoutes);
 app.use("/api/detections", detectionRoutes);
 app.use("/api/device", deviceRoutes);

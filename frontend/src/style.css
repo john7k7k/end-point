@@ -23,6 +23,7 @@ a { color: inherit; text-decoration: none; }
 .brand-mark { width: 42px; height: 42px; display: grid; place-items: center; border-radius: 12px; background: linear-gradient(135deg, #64b5ff, #4b88ff); color: #fff; font-weight: 700; font-size: 1.1rem; }
 .brand-eyebrow { margin: 0 0 2px; color: #75a8ff; font-size: 0.72rem; letter-spacing: 0.25rem; text-transform: uppercase; }
 .brand h2 { margin: 0; font-size: 1rem; }
+.brand-title-row { display: flex; align-items: center; gap: 8px; }.brand-login, .brand-logout { padding: 4px 8px; border-radius: 7px; font-size: .75rem; line-height: 1.2; }.brand-user-actions { display: flex; align-items: center; gap: 6px; color: #c9dcfb; font-size: .78rem; white-space: nowrap; }.brand-logout { background: rgba(255,255,255,.1); color: #e5eef8; }.account-page { max-width: 560px; }.account-panel { max-width: 420px; }.account-switch { width: 100%; margin-top: 12px; background: transparent; border-color: rgba(117,168,255,.45); color: #9ec5ff; }
 .nav-section { margin-bottom: 18px; }
 .nav-group-title { margin: 0 0 8px; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.2rem; color: #6f88af; }
 .nav-link { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 10px; margin-bottom: 6px; color: #dfe8f7; transition: background 0.2s ease, transform 0.2s ease; }

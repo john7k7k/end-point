@@ -1,8 +1,0 @@
-Frontend dist path: D:\ncku\末端定位技術\code\frontend\dist
-Frontend dist exists: true
-MQTT connected
-MQTT subscribed to vision/operation/start, vision/operation/end, and vision/detection
-MongoDB connected
-Server running on port 3000
-MQTT connected
-MQTT subscribed to vision/operation/start, vision/operation/end, and vision/detection
