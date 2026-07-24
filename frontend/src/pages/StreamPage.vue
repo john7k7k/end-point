@@ -12,10 +12,10 @@ const positioning = ref(null), loading = ref(true), saving = ref(false), error =
 const positionTrail = ref([]);
 const sceneContainer = ref(null), sceneTooltip = ref(null);
 const anchors = [
-  { id: 1, x: 0, y: 0, z: 0 }, { id: 2, x: 4, y: 0, z: 0 },
-  { id: 3, x: 0, y: 4, z: 0 }, { id: 4, x: 4, y: 4, z: 0 },
-  { id: 5, x: 0, y: 0, z: 2.5 }, { id: 6, x: 4, y: 0, z: 2.5 },
-  { id: 7, x: 0, y: 4, z: 2.5 }, { id: 8, x: 4, y: 4, z: 2.5 }
+  { id: 1, x: 0, y: 0, z: 0 }, { id: 2, x: 20, y: 0, z: 0 },
+  { id: 3, x: 0, y: 12, z: 0 }, { id: 4, x: 20, y: 12, z: 0 },
+  { id: 5, x: 0, y: 0, z: 2.5 }, { id: 6, x: 20, y: 0, z: 2.5 },
+  { id: 7, x: 0, y: 12, z: 2.5 }, { id: 8, x: 20, y: 12, z: 2.5 }
 ];
 let positionTimer;
 let renderer, scene, camera, controls, deviceGroup, screwGroup, trailLine, raycaster, pointer, sceneFrame, resizeObserver;
@@ -59,9 +59,9 @@ const addHoverTarget = (object, label) => { object.userData.hoverLabel = label; 
 const createAnchorIcon = (anchor) => {
   const group = new THREE.Group();
   const material = new THREE.MeshStandardMaterial({ color: 0x3b82f6, roughness: .35, metalness: .35 });
-  const base = new THREE.Mesh(new THREE.CylinderGeometry(.12, .18, .08, 16), material);
-  const mast = new THREE.Mesh(new THREE.CylinderGeometry(.035, .035, .23, 10), material);
-  mast.position.y = .14; group.add(base, mast); group.position.copy(anchorPosition(anchor));
+  const base = new THREE.Mesh(new THREE.BoxGeometry(.24, .12, .24), material);
+  const marker = new THREE.Mesh(new THREE.BoxGeometry(.1, .16, .1), material);
+  marker.position.y = .14; group.add(base, marker); group.position.copy(anchorPosition(anchor));
   addHoverTarget(group, `基地站 ${anchor.id}：X ${anchor.x}、Y ${anchor.y}、Z ${anchor.z} m`); return group;
 };
 const createScrewIcon = () => {
@@ -85,14 +85,14 @@ const updateThreeScene = () => {
 const initThreeScene = async () => {
   await nextTick(); if (renderer || !sceneContainer.value) { updateThreeScene(); return; }
   scene = new THREE.Scene(); scene.background = new THREE.Color(0xffffff);
-  camera = new THREE.PerspectiveCamera(42, 1, .1, 100); camera.position.set(7.2, 6.4, 8.2);
+  camera = new THREE.PerspectiveCamera(42, 1, .1, 100); camera.position.set(25, 19, 26);
   renderer = new THREE.WebGLRenderer({ antialias: true }); renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2)); sceneContainer.value.appendChild(renderer.domElement);
-  controls = new OrbitControls(camera, renderer.domElement); controls.target.set(2, 1.1, 2); controls.enableDamping = true; controls.minDistance = 4; controls.maxDistance = 14;
+  controls = new OrbitControls(camera, renderer.domElement); controls.target.set(10, 1.1, 6); controls.enableDamping = true; controls.minDistance = 8; controls.maxDistance = 42;
   scene.add(new THREE.HemisphereLight(0xffffff, 0xcbd5e1, 2)); const light = new THREE.DirectionalLight(0xffffff, 2.5); light.position.set(5, 7, 4); scene.add(light);
-  const floor = new THREE.Mesh(new THREE.PlaneGeometry(4.8, 4.8), new THREE.MeshStandardMaterial({ color: 0xf8fafc, roughness: .95 })); floor.rotation.x = -Math.PI / 2; floor.position.set(2, -.02, 2); scene.add(floor);
-  const grid = new THREE.GridHelper(4.8, 12, 0xcbd5e1, 0xe2e8f0); grid.position.set(2, 0, 2); scene.add(grid);
+  const floor = new THREE.Mesh(new THREE.PlaneGeometry(20, 12), new THREE.MeshStandardMaterial({ color: 0xf8fafc, roughness: .95 })); floor.rotation.x = -Math.PI / 2; floor.position.set(10, -.02, 6); scene.add(floor);
+  const grid = new THREE.GridHelper(20, 20, 0xcbd5e1, 0xe2e8f0); grid.scale.z = .6; grid.position.set(10, 0, 6); scene.add(grid);
   anchors.forEach((anchor) => scene.add(createAnchorIcon(anchor)));
-  deviceGroup = new THREE.Group(); const deviceDot = new THREE.Mesh(new THREE.SphereGeometry(.12, 20, 16), new THREE.MeshStandardMaterial({ color: 0x10b981, emissive: 0x046c4e, emissiveIntensity: .35 })); const beam = new THREE.Mesh(new THREE.ConeGeometry(.45, 1.2, 24, 1, true), new THREE.MeshBasicMaterial({ color: 0x34d399, transparent: true, opacity: .2, side: THREE.DoubleSide })); beam.rotation.x = -Math.PI / 2; beam.position.z = -.6; deviceGroup.add(deviceDot, beam); scene.add(deviceGroup);
+  deviceGroup = new THREE.Group(); const deviceDot = new THREE.Mesh(new THREE.SphereGeometry(.12, 20, 16), new THREE.MeshStandardMaterial({ color: 0x10b981, emissive: 0x046c4e, emissiveIntensity: .35 })); const beam = new THREE.Mesh(new THREE.ConeGeometry(.45, 1.2, 24, 1, true), new THREE.MeshBasicMaterial({ color: 0x34d399, transparent: true, opacity: .2, side: THREE.DoubleSide })); beam.rotation.x = -Math.PI / 2; beam.position.z = .6; deviceGroup.add(deviceDot, beam); scene.add(deviceGroup);
   screwGroup = createScrewIcon(); scene.add(screwGroup); trailLine = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0xdc2626, linewidth: 1 })); scene.add(trailLine);
   raycaster = new THREE.Raycaster(); pointer = new THREE.Vector2(); renderer.domElement.addEventListener('pointermove', showSceneTooltip);
   resizeObserver = new ResizeObserver(resizeThreeScene); resizeObserver.observe(sceneContainer.value); resizeThreeScene(); updateThreeScene(); renderThreeScene();
@@ -185,7 +185,7 @@ onUnmounted(() => { window.clearInterval(positionTimer); disposeThreeScene(); })
       </aside>
     </div>
     <section v-if="positioning" class="telemetry-dashboard">
-      <div class="position-scene-card"><div class="scene-heading"><div><p class="eyebrow">Three.js 3D Position View</p><h3>設備軌跡與作業空間</h3></div><span>拖曳可旋轉、滾輪可縮放；停留於圖示可查看座標</span></div><div ref="sceneContainer" class="three-scene"><div ref="sceneTooltip" class="three-tooltip"></div></div><div class="scene-legend"><span><i class="legend-anchor"></i>基地站</span><span><i class="legend-device"></i>設備／攝影機光錐</span><span><i class="legend-screw"></i>螺絲</span><span><i class="legend-trail"></i>移動軌跡</span></div></div>
+      <div class="position-scene-card"><div class="scene-heading"><div><h3>操作空間建模</h3></div><span>拖曳可旋轉、滾輪可縮放；停留於圖示可查看座標</span></div><div ref="sceneContainer" class="three-scene"><div ref="sceneTooltip" class="three-tooltip"></div></div><div class="scene-legend"><span><i class="legend-anchor"></i>基地站</span><span><i class="legend-device"></i>設備／攝影機光錐</span><span><i class="legend-screw"></i>螺絲</span><span><i class="legend-trail"></i>移動軌跡</span></div></div>
       <aside class="fusion-data-card"><h3>UWB + IMU 融合資料</h3><div class="current-position"><strong>ES-EKF 輸出設備位置</strong><span>X {{ format(positioning.telemetry.position.x) }}　Y {{ format(positioning.telemetry.position.y) }}　Z {{ format(positioning.telemetry.position.z) }} m</span></div><div class="sensor-columns"><div><h4>UWB：8 個基地站距離（m）</h4><div class="uwb-range-grid"><span v-for="range in (positioning.telemetry.uwbRanges || [])" :key="range.stationId">站 {{ range.stationId + 1 }}：{{ format(range.distance) }}</span></div></div><div class="imu-readout"><h4>IMU 即時量測</h4><p>加速度：{{ format(positioning.telemetry.imu?.acceleration?.x) }}, {{ format(positioning.telemetry.imu?.acceleration?.y) }}, {{ format(positioning.telemetry.imu?.acceleration?.z) }} m/s²</p><p>角速度：{{ format(positioning.telemetry.imu?.gyroscope?.x) }}, {{ format(positioning.telemetry.imu?.gyroscope?.y) }}, {{ format(positioning.telemetry.imu?.gyroscope?.z) }} °/s</p><p>姿態：Roll {{ format(positioning.telemetry.orientation.roll) }}°、Pitch {{ format(positioning.telemetry.orientation.pitch) }}°、Yaw {{ format(positioning.telemetry.orientation.yaw) }}°</p></div></div><label>UWB + IMU 融合演算法<select v-model="fusionAlgorithm"><option value="ekf">Error-State Extended Kalman Filter (ES-EKF)</option><option value="complementary">Complementary Filter</option><option value="weighted_average">Weighted Average</option></select></label><button type="button" :disabled="saving" @click="saveFusion">{{ saving ? '傳送中…' : '套用融合設定' }}</button></aside>
     </section>
     <p v-if="message" class="success">{{ message }}</p><p v-if="error" class="alert">{{ error }}</p>

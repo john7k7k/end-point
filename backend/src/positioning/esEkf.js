@@ -1,10 +1,10 @@
 const anchors = [
-  [0, 0, 0], [4, 0, 0], [0, 4, 0], [4, 4, 0],
-  [0, 0, 2.5], [4, 0, 2.5], [0, 4, 2.5], [4, 4, 2.5]
+  [0, 0, 0], [20, 0, 0], [0, 12, 0], [20, 12, 0],
+  [0, 0, 2.5], [20, 0, 2.5], [0, 12, 2.5], [20, 12, 2.5]
 ];
 
 const state = {
-  position: [1.2, 0.8, 1.45], velocity: [0, 0, 0], quaternion: [1, 0, 0, 0],
+  position: [10, 6, 1.45], velocity: [0, 0, 0], quaternion: [1, 0, 0, 0],
   positionVariance: [0.4, 0.4, 0.4], lastUpdate: Date.now(), latestRanges: [], latestImu: null
 };
 
@@ -70,7 +70,7 @@ export const updateUwb = (ranges) => {
 
 const virtualMeasurements = () => {
   const time = Date.now() / 1000;
-  const truth = [1.8 + Math.sin(time * 0.2), 1.8 + Math.cos(time * 0.16), 1.35 + Math.sin(time * 0.1) * 0.12];
+  const truth = [10 + Math.sin(time * 0.2) * 3.5, 6 + Math.cos(time * 0.16) * 2.4, 1.35 + Math.sin(time * 0.1) * 0.08];
   const noise = (index) => Math.sin(time * (index + 1) * 1.7) * 0.035;
   return {
     acceleration: { x: -0.04 * Math.sin(time * 0.2), y: -0.026 * Math.cos(time * 0.16), z: -0.001 * Math.sin(time * 0.1) },

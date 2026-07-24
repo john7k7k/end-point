@@ -1,4 +1,0 @@
-No active operation found (status 404)
-No active operation found; waiting for an operation update.
-INFO:     127.0.0.1:54394 - "POST /api/simulation-config HTTP/1.1" 200 OK
-INFO:     127.0.0.1:54394 - "POST /api/simulation-config HTTP/1.1" 200 OK
