@@ -4,16 +4,19 @@ import Detection from "../models/Detection.js";
 import User from "../models/User.js";
 import { getSimulationConfigValue } from "../controllers/simulationController.js";
 import { getEsEkfState, predict, stepVirtual, updateUwb } from "../positioning/esEkf.js";
+import { getWorkspaceState } from "../positioning/screwWorkspace.js";
 
 const client = mqtt.connect("mqtt://localhost:1883");
 const AI_ENDPOINT = "http://localhost:8000/api/operation-update";
 let hasUwbRanges = false;
 let hasImuData = false;
+let lastNotificationKey = '';
+let lastNotificationAt = 0;
 
 export const getDeviceTelemetry = () => {
   if (!hasUwbRanges || !hasImuData) stepVirtual();
   const filter = getEsEkfState();
-  return {
+  const telemetry = {
     position: filter.position,
     orientation: filter.orientation,
     quaternion: filter.quaternion,
@@ -22,6 +25,15 @@ export const getDeviceTelemetry = () => {
     imu: filter.imu,
     updatedAt: new Date().toISOString()
   };
+  const workspace = getWorkspaceState(telemetry);
+  const notificationKey = workspace.notification;
+  if (notificationKey && (notificationKey !== lastNotificationKey || Date.now() - lastNotificationAt > 5000)) {
+    client.publish("vision/notification", JSON.stringify({ level: "info", text: notificationKey, timestamp: telemetry.updatedAt }), { qos: 1 });
+    lastNotificationKey = notificationKey;
+    lastNotificationAt = Date.now();
+  }
+  if (!notificationKey) lastNotificationKey = '';
+  return { ...telemetry, workspace };
 };
 
 client.on("connect", () => {
@@ -160,8 +172,11 @@ async function handleDetection(data) {
     }
 
     const telemetry = getDeviceTelemetry();
+    const recognizedScrew = telemetry.workspace.visibleScrews.sort((a, b) => a.depth - b.depth)[0];
+    // The detector only updates records for a known screw inside camera FOV and depth limits.
+    if (!recognizedScrew) return;
     const bbox = data.bbox || { x: 860, y: 465, width: 200, height: 150 };
-    const depthMeters = Number(data.depth || 120) / 100;
+    const depthMeters = recognizedScrew.depth;
     const cameraPosition = {
       x: (((bbox.x + bbox.width / 2 - 960) / 960) * depthMeters * 0.577),
       y: (((bbox.y + bbox.height / 2 - 540) / 540) * depthMeters * 0.325),
@@ -174,14 +189,16 @@ async function handleDetection(data) {
       y: telemetry.position.y + Math.sin(yaw) * cameraPosition.x + Math.cos(yaw) * cameraPosition.y,
       z: telemetry.position.z + cameraPosition.z
     };
+    data.objectClass = recognizedScrew.type;
+    data.depth = depthMeters * 100;
     data.sensors = [{
       timestamp: new Date(), imu: true, devicePosition: telemetry.position,
       gyroscope: { x: orientation.roll, y: orientation.pitch, z: orientation.yaw }
     }];
     data.devicePosition = telemetry.position;
     data.deviceOrientation = { x: orientation.roll, y: orientation.pitch, z: orientation.yaw };
-    data.cameraPosition = cameraPosition;
-    data.absolutePosition = absolutePosition;
+    data.cameraPosition = recognizedScrew.cameraPosition;
+    data.absolutePosition = { x: recognizedScrew.x, y: recognizedScrew.y, z: recognizedScrew.z };
     data.fusionAlgorithm = getSimulationConfigValue().fusionAlgorithm;
     await Detection.create(data);
 

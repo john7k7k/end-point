@@ -17,8 +17,15 @@ const anchors = [
   { id: 5, x: 0, y: 0, z: 2.5 }, { id: 6, x: 20, y: 0, z: 2.5 },
   { id: 7, x: 0, y: 12, z: 2.5 }, { id: 8, x: 20, y: 12, z: 2.5 }
 ];
+const rawScrews = [
+  { id: 'A-1', type: 'M4 hex screw', x: 1.2, y: 1.2, z: 1.1 }, { id: 'A-2', type: 'M4 hex screw', x: 2, y: 1.2, z: 1.1 },
+  { id: 'B-1', type: 'M6 socket screw', x: 18, y: 1.2, z: 1.1 }, { id: 'B-2', type: 'M6 socket screw', x: 18.8, y: 1.2, z: 1.1 },
+  { id: 'B-3', type: 'M6 socket screw', x: 1.2, y: 10.8, z: 1.1 }, { id: 'B-4', type: 'M6 socket screw', x: 2, y: 10.8, z: 1.1 },
+  { id: 'A-3', type: 'M4 hex screw', x: 18, y: 10.8, z: 1.1 }, { id: 'A-4', type: 'M4 hex screw', x: 18.8, y: 10.8, z: 1.1 }
+];
 let positionTimer;
 let renderer, scene, camera, controls, deviceGroup, screwGroup, trailLine, raycaster, pointer, sceneFrame, resizeObserver;
+const rawScrewGroups = new Map();
 
 const activeOperation = computed(() => operations.value
   .filter((operation) => !operation.endTime)
@@ -64,11 +71,11 @@ const createAnchorIcon = (anchor) => {
   marker.position.y = .14; group.add(base, marker); group.position.copy(anchorPosition(anchor));
   addHoverTarget(group, `基地站 ${anchor.id}：X ${anchor.x}、Y ${anchor.y}、Z ${anchor.z} m`); return group;
 };
-const createScrewIcon = () => {
-  const group = new THREE.Group(); const material = new THREE.MeshStandardMaterial({ color: 0xf59e0b, metalness: .72, roughness: .25 });
+const createScrewIcon = (color = 0xf59e0b) => {
+  const group = new THREE.Group(); const material = new THREE.MeshStandardMaterial({ color, metalness: .72, roughness: .25 });
   const body = new THREE.Mesh(new THREE.CylinderGeometry(.045, .045, .25, 16), material); body.rotation.z = Math.PI / 2;
   const head = new THREE.Mesh(new THREE.CylinderGeometry(.105, .105, .045, 16), material); head.rotation.z = Math.PI / 2; head.position.x = -.14;
-  group.add(body, head); return group;
+  group.add(body, head); group.userData.material = material; return group;
 };
 const updateThreeScene = () => {
   if (!scene || !positioning.value || !deviceGroup || !screwGroup) return;
@@ -77,10 +84,19 @@ const updateThreeScene = () => {
   const radians = Math.PI / 180, o = telemetry.orientation;
   deviceGroup.rotation.set(o.pitch * radians, -o.yaw * radians, o.roll * radians, 'YXZ');
   screwGroup.position.copy(toScenePosition(positioning.value.absolutePosition));
+  screwGroup.visible = !telemetry.workspace;
   addHoverTarget(deviceGroup, `設備：X ${format(telemetry.position.x)}、Y ${format(telemetry.position.y)}、Z ${format(telemetry.position.z)} m；Roll ${format(o.roll)}°、Pitch ${format(o.pitch)}°、Yaw ${format(o.yaw)}°`);
   addHoverTarget(screwGroup, `螺絲：X ${format(positioning.value.absolutePosition.x)}、Y ${format(positioning.value.absolutePosition.y)}、Z ${format(positioning.value.absolutePosition.z)} m`);
   const geometry = new THREE.BufferGeometry().setFromPoints(positionTrail.value.map(toScenePosition));
   trailLine.geometry.dispose(); trailLine.geometry = geometry;
+  const workspaceScrews = telemetry.workspace?.screws || rawScrews;
+  workspaceScrews.forEach((screw) => {
+    const group = rawScrewGroups.get(screw.id); if (!group) return;
+    const typeColor = screw.type.includes('M4') ? 0x2563eb : 0x9333ea;
+    group.userData.material.color.setHex(screw.visible ? 0xf59e0b : typeColor);
+    group.userData.material.emissive?.setHex(screw.visible ? 0x6b3d00 : 0x000000);
+    addHoverTarget(group, `${screw.type} ${screw.id}：X ${format(screw.x)}、Y ${format(screw.y)}、Z ${format(screw.z)} m${screw.visible ? `；已在攝影機視野內，深度 ${format(screw.depth)} m` : '；未進入攝影機辨識範圍'}`);
+  });
 };
 const initThreeScene = async () => {
   await nextTick(); if (renderer || !sceneContainer.value) { updateThreeScene(); return; }
@@ -93,7 +109,7 @@ const initThreeScene = async () => {
   const grid = new THREE.GridHelper(20, 20, 0xcbd5e1, 0xe2e8f0); grid.scale.z = .6; grid.position.set(10, 0, 6); scene.add(grid);
   anchors.forEach((anchor) => scene.add(createAnchorIcon(anchor)));
   deviceGroup = new THREE.Group(); const deviceDot = new THREE.Mesh(new THREE.SphereGeometry(.12, 20, 16), new THREE.MeshStandardMaterial({ color: 0x10b981, emissive: 0x046c4e, emissiveIntensity: .35 })); const beam = new THREE.Mesh(new THREE.ConeGeometry(.45, 1.2, 24, 1, true), new THREE.MeshBasicMaterial({ color: 0x34d399, transparent: true, opacity: .2, side: THREE.DoubleSide })); beam.rotation.x = -Math.PI / 2; beam.position.z = .6; deviceGroup.add(deviceDot, beam); scene.add(deviceGroup);
-  screwGroup = createScrewIcon(); scene.add(screwGroup); trailLine = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0xdc2626, linewidth: 1 })); scene.add(trailLine);
+  screwGroup = createScrewIcon(); scene.add(screwGroup); rawScrews.forEach((screw) => { const group = createScrewIcon(screw.type.includes('M4') ? 0x2563eb : 0x9333ea); group.position.copy(toScenePosition(screw)); addHoverTarget(group, `${screw.type} ${screw.id}：X ${screw.x}、Y ${screw.y}、Z ${screw.z} m`); rawScrewGroups.set(screw.id, group); scene.add(group); }); trailLine = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0xdc2626, linewidth: 1 })); scene.add(trailLine);
   raycaster = new THREE.Raycaster(); pointer = new THREE.Vector2(); renderer.domElement.addEventListener('pointermove', showSceneTooltip);
   resizeObserver = new ResizeObserver(resizeThreeScene); resizeObserver.observe(sceneContainer.value); resizeThreeScene(); updateThreeScene(); renderThreeScene();
 };
@@ -185,7 +201,7 @@ onUnmounted(() => { window.clearInterval(positionTimer); disposeThreeScene(); })
       </aside>
     </div>
     <section v-if="positioning" class="telemetry-dashboard">
-      <div class="position-scene-card"><div class="scene-heading"><div><h3>操作空間建模</h3></div><span>拖曳可旋轉、滾輪可縮放；停留於圖示可查看座標</span></div><div ref="sceneContainer" class="three-scene"><div ref="sceneTooltip" class="three-tooltip"></div></div><div class="scene-legend"><span><i class="legend-anchor"></i>基地站</span><span><i class="legend-device"></i>設備／攝影機光錐</span><span><i class="legend-screw"></i>螺絲</span><span><i class="legend-trail"></i>移動軌跡</span></div></div>
+      <div class="position-scene-card"><div class="scene-heading"><div><h3>操作空間建模</h3></div><span>拖曳可旋轉、滾輪可縮放；停留於圖示可查看座標</span></div><p v-if="positioning.workspace?.notification" class="nearby-screw-alert">提示：{{ positioning.workspace.notification }}</p><div ref="sceneContainer" class="three-scene"><div ref="sceneTooltip" class="three-tooltip"></div></div><div class="scene-legend"><span><i class="legend-anchor"></i>基地站</span><span><i class="legend-device"></i>設備／攝影機光錐</span><span><i class="legend-screw"></i>M4（藍）／M6（紫）；金色為可辨識</span><span><i class="legend-trail"></i>移動軌跡</span></div></div>
       <aside class="fusion-data-card"><h3>UWB + IMU 融合資料</h3><div class="current-position"><strong>ES-EKF 輸出設備位置</strong><span>X {{ format(positioning.telemetry.position.x) }}　Y {{ format(positioning.telemetry.position.y) }}　Z {{ format(positioning.telemetry.position.z) }} m</span></div><div class="sensor-columns"><div><h4>UWB：8 個基地站距離（m）</h4><div class="uwb-range-grid"><span v-for="range in (positioning.telemetry.uwbRanges || [])" :key="range.stationId">站 {{ range.stationId + 1 }}：{{ format(range.distance) }}</span></div></div><div class="imu-readout"><h4>IMU 即時量測</h4><p>加速度：{{ format(positioning.telemetry.imu?.acceleration?.x) }}, {{ format(positioning.telemetry.imu?.acceleration?.y) }}, {{ format(positioning.telemetry.imu?.acceleration?.z) }} m/s²</p><p>角速度：{{ format(positioning.telemetry.imu?.gyroscope?.x) }}, {{ format(positioning.telemetry.imu?.gyroscope?.y) }}, {{ format(positioning.telemetry.imu?.gyroscope?.z) }} °/s</p><p>姿態：Roll {{ format(positioning.telemetry.orientation.roll) }}°、Pitch {{ format(positioning.telemetry.orientation.pitch) }}°、Yaw {{ format(positioning.telemetry.orientation.yaw) }}°</p></div></div><label>UWB + IMU 融合演算法<select v-model="fusionAlgorithm"><option value="ekf">Error-State Extended Kalman Filter (ES-EKF)</option><option value="complementary">Complementary Filter</option><option value="weighted_average">Weighted Average</option></select></label><button type="button" :disabled="saving" @click="saveFusion">{{ saving ? '傳送中…' : '套用融合設定' }}</button></aside>
     </section>
     <p v-if="message" class="success">{{ message }}</p><p v-if="error" class="alert">{{ error }}</p>

@@ -54,6 +54,7 @@ export const getLatestPositioning = async (req, res) => {
     detection: { objectClass: detection.objectClass, bbox: detection.bbox, depth: detection.depth, detectionAlgorithm: detection.detectionAlgorithm || "mock_yolo" },
     cameraPosition: detection.cameraPosition || cameraPosition,
     absolutePosition: detection.absolutePosition || calculatedAbsolutePosition,
-    fusionAlgorithm: detection.fusionAlgorithm || getSimulationConfigValue().fusionAlgorithm
+    fusionAlgorithm: detection.fusionAlgorithm || getSimulationConfigValue().fusionAlgorithm,
+    workspace: latestTelemetry.workspace
   });
 };

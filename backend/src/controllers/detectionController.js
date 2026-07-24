@@ -4,8 +4,11 @@ import { getSimulationConfigValue } from "./simulationController.js";
 
 const attachPositioningData = (data) => {
   const telemetry = getDeviceTelemetry();
+  const recognizedScrew = telemetry.workspace.visibleScrews.sort((a, b) => a.depth - b.depth)[0];
+  // Do not create detection records unless a reference screw is inside camera FOV and depth range.
+  if (!recognizedScrew) return null;
   const bbox = data.bbox || { x: 860, y: 465, width: 200, height: 150 };
-  const depthMeters = Number(data.depth || 120) / 100;
+  const depthMeters = recognizedScrew.depth;
   const cameraPosition = {
     x: ((bbox.x + bbox.width / 2 - 960) / 960) * depthMeters * 0.577,
     y: ((bbox.y + bbox.height / 2 - 540) / 540) * depthMeters * 0.325,
@@ -15,15 +18,13 @@ const attachPositioningData = (data) => {
   const yaw = orientation.yaw * Math.PI / 180;
   return {
     ...data,
+    objectClass: recognizedScrew.type,
+    depth: depthMeters * 100,
     sensors: [{ timestamp: new Date(), imu: true, devicePosition: telemetry.position, gyroscope: { x: orientation.roll, y: orientation.pitch, z: orientation.yaw } }],
     devicePosition: telemetry.position,
     deviceOrientation: { x: orientation.roll, y: orientation.pitch, z: orientation.yaw },
-    cameraPosition,
-    absolutePosition: {
-      x: telemetry.position.x + Math.cos(yaw) * cameraPosition.x - Math.sin(yaw) * cameraPosition.y,
-      y: telemetry.position.y + Math.sin(yaw) * cameraPosition.x + Math.cos(yaw) * cameraPosition.y,
-      z: telemetry.position.z + cameraPosition.z
-    },
+    cameraPosition: recognizedScrew.cameraPosition,
+    absolutePosition: { x: recognizedScrew.x, y: recognizedScrew.y, z: recognizedScrew.z },
     fusionAlgorithm: getSimulationConfigValue().fusionAlgorithm
   };
 };
@@ -42,7 +43,9 @@ export const createDetection = async (req, res) => {
       return res.status(400).json({ error: "objectClass is required" });
     }
 
-    const detection = await Detection.create(attachPositioningData(req.body));
+    const enriched = attachPositioningData(req.body);
+    if (!enriched) return res.status(204).end();
+    const detection = await Detection.create(enriched);
     res.status(201).json(detection);
   } catch (err) {
     res.status(500).json({ error: err.message });
