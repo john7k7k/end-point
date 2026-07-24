@@ -64,8 +64,8 @@ const toggleTheme = () => { isLightTheme.value = !isLightTheme.value; localStora
 
       <nav class="nav-section" v-for="group in visibleNavGroups" :key="group.title">
         <p class="nav-group-title">{{ group.title }}</p>
-        <RouterLink v-for="item in group.items" :key="item.to" class="nav-link" :to="item.to" exact-active-class="active">
-          <span class="icon">{{ item.icon }}</span>
+        <RouterLink v-for="item in group.items" :key="item.to" class="nav-link" :class="{ active: route.path === item.to }" :to="item.to" exact-active-class="active">
+          <span class="icon">{{ route.path === item.to ? '●' : item.icon }}</span>
           <span>{{ item.label }}</span>
         </RouterLink>
       </nav>
