@@ -36,6 +36,13 @@ const navGroups = [
       { label: '影像串流', to: '/media/stream', icon: '◌' },
       { label: '語音提示', to: '/media/voice', icon: '◌' }
     ]
+  },
+  {
+    title: '系統設定',
+    requiresAuth: true,
+    items: [
+      { label: '相機外參設定', to: '/settings/camera-extrinsics' }
+    ]
   }
 ];
 
@@ -65,7 +72,7 @@ const toggleTheme = () => { isLightTheme.value = !isLightTheme.value; localStora
       <nav class="nav-section" v-for="group in visibleNavGroups" :key="group.title">
         <p class="nav-group-title">{{ group.title }}</p>
         <RouterLink v-for="item in group.items" :key="item.to" class="nav-link" :class="{ active: route.path === item.to }" :to="item.to" exact-active-class="active">
-          <span class="icon">{{ route.path === item.to ? '●' : item.icon }}</span>
+          <span class="icon" aria-hidden="true"></span>
           <span>{{ item.label }}</span>
         </RouterLink>
       </nav>

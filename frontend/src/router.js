@@ -10,6 +10,7 @@ import TaskHistoryPage from './pages/TaskHistoryPage.vue';
 import OperationLogPage from './pages/OperationLogPage.vue';
 import StreamPage from './pages/StreamPage.vue';
 import VoicePage from './pages/VoicePage.vue';
+import CameraCalibrationPage from './pages/CameraCalibrationPage.vue';
 import { isAuthenticated } from './auth';
 
 const routes = [
@@ -23,7 +24,8 @@ const routes = [
   { path: '/history/tasks', name: 'history-tasks', component: TaskHistoryPage, meta: { requiresAuth: true } },
   { path: '/history/operations', name: 'history-operations', component: OperationLogPage, meta: { requiresAuth: true } },
   { path: '/media/stream', name: 'media-stream', component: StreamPage, meta: { requiresAuth: true } },
-  { path: '/media/voice', name: 'media-voice', component: VoicePage, meta: { requiresAuth: true } }
+  { path: '/media/voice', name: 'media-voice', component: VoicePage, meta: { requiresAuth: true } },
+  { path: '/settings/camera-extrinsics', name: 'camera-extrinsics', component: CameraCalibrationPage, meta: { requiresAuth: true } }
 ];
 
 const router = createRouter({

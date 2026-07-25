@@ -14,6 +14,7 @@ import videoRoutes from "./routes/videoRoutes.js";
 import simulationRoutes from "./routes/simulationRoutes.js";
 import positioningRoutes from "./routes/positioningRoutes.js";
 import operatorTelemetryRoutes from "./routes/operatorTelemetryRoutes.js";
+import calibrationRoutes from "./routes/calibrationRoutes.js";
 
 const app = express();
 const __filename = fileURLToPath(import.meta.url);
@@ -34,13 +35,14 @@ app.use("/api/videos", videoRoutes);
 app.use("/api/simulation", simulationRoutes);
 app.use("/api/positioning", positioningRoutes);
 app.use("/api/operator-telemetry", operatorTelemetryRoutes);
+app.use("/api/calibration", calibrationRoutes);
 
 if (existsSync(frontendDistPath)) {
   app.use(express.static(frontendDistPath));
   app.get("/", (_req, res) => {
     res.sendFile(path.join(frontendDistPath, "index.html"));
   });
-  app.get(["/account", "/account/:page", "/guide", "/technology", "/history/:page", "/media/:page"], (_req, res) => {
+  app.get(["/account", "/account/:page", "/guide", "/technology", "/history/:page", "/media/:page", "/settings/:page"], (_req, res) => {
     res.sendFile(path.join(frontendDistPath, "index.html"));
   });
 }
