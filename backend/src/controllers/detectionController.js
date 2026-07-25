@@ -1,7 +1,6 @@
 import Detection from "../models/Detection.js";
 import { getDeviceTelemetry } from "../mqtt/mqttClient.js";
 import { getSimulationConfigValue } from "./simulationController.js";
-import { recordOperatorTelemetry } from "./operatorTelemetryController.js";
 
 const attachPositioningData = (data, telemetry) => {
   const recognizedScrew = telemetry.workspace.visibleScrews.sort((a, b) => a.depth - b.depth)[0];
@@ -55,7 +54,6 @@ export const createDetection = async (req, res) => {
 
     const telemetry = getDeviceTelemetry();
     const fusionAlgorithm = getSimulationConfigValue().fusionAlgorithm;
-    await recordOperatorTelemetry(operationId, timestamp, telemetry, fusionAlgorithm);
     const enriched = attachPositioningData(req.body, telemetry);
     if (!enriched) return res.status(204).end();
     const detection = await Detection.create(enriched);

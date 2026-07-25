@@ -1,6 +1,6 @@
 import Operation from "../models/Operation.js";
 import User from "../models/User.js";
-import client from "../mqtt/mqttClient.js";
+import client, { beginTelemetryOperation, finalizeTelemetryOperation } from "../mqtt/mqttClient.js";
 
 export const operationStart = async (req, res) => {
   try {
@@ -20,6 +20,7 @@ export const operationStart = async (req, res) => {
       startTime: new Date(),
       description: "Started via HTTP"
     });
+    beginTelemetryOperation(operation._id);
 
     // Publish MQTT acknowledgment
     const ackPayload = { opID: operation._id.toString() };
@@ -60,6 +61,7 @@ export const operationEnd = async (req, res) => {
     if (!operation) {
       return res.status(404).json({ error: "Operation not found" });
     }
+    await finalizeTelemetryOperation(opID);
 
     try {
       await fetch("http://localhost:8000/api/operation-end", { method: "POST" });

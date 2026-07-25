@@ -8,6 +8,14 @@ const state = {
   positionVariance: [0.4, 0.4, 0.4], lastUpdate: Date.now(), latestRanges: [], latestImu: null
 };
 
+const createInertialState = () => ({
+  position: [10, 6, 1.45], velocity: [0, 0, 0], quaternion: [1, 0, 0, 0],
+  positionVariance: [0.4, 0.4, 0.4], lastUpdate: Date.now(), latestRanges: [], latestImu: null
+});
+const complementaryState = createInertialState();
+const weightedAverageState = createInertialState();
+const resetState = (target) => Object.assign(target, createInertialState());
+
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 const normalizeQuaternion = (q) => {
   const length = Math.hypot(...q) || 1;
@@ -26,7 +34,99 @@ const eulerFromQuaternion = ([w, x, y, z]) => ({
   yaw: Math.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z)) * 180 / Math.PI
 });
 
-export const predict = (acceleration, gyroscope, now = Date.now()) => {
+const validRangesFrom = (ranges) => ranges.filter((item) => Number.isInteger(item.stationId) && anchors[item.stationId] && Number.isFinite(item.distance));
+const recordRanges = (target, ranges) => {
+  target.latestRanges = ranges.map(({ stationId, distance }) => ({ stationId, distance: Number(distance.toFixed(3)) }));
+};
+const integrateImu = (target, acceleration, gyroscope, now) => {
+  const dt = clamp((now - target.lastUpdate) / 1000, 0.001, 0.1);
+  target.lastUpdate = now;
+  target.latestImu = {
+    acceleration: Object.fromEntries(['x', 'y', 'z'].map((axis) => [axis, Number(Number(acceleration[axis] || 0).toFixed(3))])),
+    gyroscope: Object.fromEntries(['x', 'y', 'z'].map((axis) => [axis, Number(Number(gyroscope[axis] || 0).toFixed(3))]))
+  };
+  const gyro = [gyroscope.x, gyroscope.y, gyroscope.z].map((value) => Number(value || 0) * Math.PI / 180);
+  target.quaternion = normalizeQuaternion(quaternionMultiply(target.quaternion, [1, gyro[0] * dt / 2, gyro[1] * dt / 2, gyro[2] * dt / 2]));
+  for (let axis = 0; axis < 3; axis += 1) {
+    const value = Number(acceleration[['x', 'y', 'z'][axis]] || 0);
+    target.position[axis] += target.velocity[axis] * dt + value * dt * dt / 2;
+    target.velocity[axis] += value * dt;
+    target.positionVariance[axis] += 0.03 * dt;
+  }
+};
+
+const solve3x3 = (matrix, vector) => {
+  const [[a, b, c], [d, e, f], [g, h, i]] = matrix;
+  const determinant = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
+  if (Math.abs(determinant) < 1e-8) return null;
+  const inverse = [
+    [(e * i - f * h) / determinant, (c * h - b * i) / determinant, (b * f - c * e) / determinant],
+    [(f * g - d * i) / determinant, (a * i - c * g) / determinant, (c * d - a * f) / determinant],
+    [(d * h - e * g) / determinant, (b * g - a * h) / determinant, (a * e - b * d) / determinant]
+  ];
+  return inverse.map((row) => row.reduce((sum, value, index) => sum + value * vector[index], 0));
+};
+
+// Nonlinear least squares multilateration. It turns the 8 UWB ranges into an
+// independent 3D UWB position used by the two non-EKF fusion branches.
+const solveUwbPosition = (ranges, initialPosition) => {
+  if (ranges.length < 4) return null;
+  const position = [...initialPosition];
+  for (let iteration = 0; iteration < 5; iteration += 1) {
+    const normal = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
+    const gradient = [0, 0, 0];
+    for (const { stationId, distance } of ranges) {
+      const delta = position.map((value, axis) => value - anchors[stationId][axis]);
+      const predicted = Math.hypot(...delta) || 0.001;
+      const residual = distance - predicted;
+      const h = delta.map((value) => value / predicted);
+      for (let row = 0; row < 3; row += 1) {
+        gradient[row] += h[row] * residual;
+        for (let column = 0; column < 3; column += 1) normal[row][column] += h[row] * h[column];
+      }
+    }
+    const correction = solve3x3(normal, gradient);
+    if (!correction) return null;
+    correction.forEach((value, axis) => { position[axis] += clamp(value, -1, 1); });
+    if (Math.hypot(...correction) < 0.001) break;
+  }
+  const residualVariance = ranges.reduce((sum, { stationId, distance }) => {
+    const residual = distance - Math.hypot(...position.map((value, axis) => value - anchors[stationId][axis]));
+    return sum + residual * residual;
+  }, 0) / ranges.length;
+  return { position, variance: Math.max(0.01, residualVariance) };
+};
+
+const updateComplementary = (ranges) => {
+  const validRanges = validRangesFrom(ranges); recordRanges(complementaryState, validRanges);
+  const uwb = solveUwbPosition(validRanges, complementaryState.position);
+  if (!uwb) return;
+  // High-frequency inertial prediction + low-frequency, drift-free UWB position.
+  const alpha = 0.86;
+  complementaryState.position = complementaryState.position.map((value, axis) => alpha * value + (1 - alpha) * uwb.position[axis]);
+  complementaryState.positionVariance = complementaryState.positionVariance.map((value) => Math.max(0.01, alpha * value + (1 - alpha) * uwb.variance));
+};
+
+const updateWeightedAverage = (ranges) => {
+  const validRanges = validRangesFrom(ranges); recordRanges(weightedAverageState, validRanges);
+  const uwb = solveUwbPosition(validRanges, weightedAverageState.position);
+  if (!uwb) return;
+  weightedAverageState.position = weightedAverageState.position.map((inertialPosition, axis) => {
+    const inertialVariance = Math.max(0.01, weightedAverageState.positionVariance[axis]);
+    const uwbWeight = 1 / uwb.variance;
+    const inertialWeight = 1 / inertialVariance;
+    return (uwbWeight * uwb.position[axis] + inertialWeight * inertialPosition) / (uwbWeight + inertialWeight);
+  });
+  weightedAverageState.positionVariance = weightedAverageState.positionVariance.map((value) => {
+    const inertialWeight = 1 / Math.max(0.01, value);
+    const uwbWeight = 1 / uwb.variance;
+    return 1 / (inertialWeight + uwbWeight);
+  });
+};
+
+export const predict = (acceleration, gyroscope, now = Date.now(), algorithm = "ekf") => {
+  if (algorithm === "complementary") return integrateImu(complementaryState, acceleration, gyroscope, now);
+  if (algorithm === "weighted_average") return integrateImu(weightedAverageState, acceleration, gyroscope, now);
   const dt = clamp((now - state.lastUpdate) / 1000, 0.001, 0.1);
   state.lastUpdate = now;
   state.latestImu = {
@@ -43,7 +143,9 @@ export const predict = (acceleration, gyroscope, now = Date.now()) => {
 };
 
 // Error-state position correction from up to eight UWB range measurements.
-export const updateUwb = (ranges) => {
+export const updateUwb = (ranges, algorithm = "ekf") => {
+  if (algorithm === "complementary") return updateComplementary(ranges);
+  if (algorithm === "weighted_average") return updateWeightedAverage(ranges);
   const validRanges = ranges.filter((item) => Number.isInteger(item.stationId) && anchors[item.stationId] && Number.isFinite(item.distance));
   state.latestRanges = validRanges.map(({ stationId, distance }) => ({ stationId, distance: Number(distance.toFixed(3)) }));
   for (let iteration = 0; iteration < 2; iteration += 1) {
@@ -81,28 +183,54 @@ const virtualMeasurements = () => {
   const to = corners[(index + 1) % corners.length];
   const truth = [from[0] + (to[0] - from[0]) * eased, from[1] + (to[1] - from[1]) * eased, 1.35 + Math.sin(time * 0.1) * 0.08];
   const heading = Math.atan2(to[1] - from[1], to[0] - from[0]);
-  const noise = (index) => Math.sin(time * (index + 1) * 1.7) * 0.035;
+  const noise = (index) => Math.sin(time * (index + 1) * 1.7) * 0.035 + (Math.random() - .5) * .012;
   return {
-    acceleration: { x: .03 * Math.sin(time * .4), y: .03 * Math.cos(time * .35), z: -.001 * Math.sin(time * .1) },
-    gyroscope: { x: 1.2 * Math.cos(time * .3), y: .8 * Math.sin(time * .23), z: 0 },
+    acceleration: { x: .03 * Math.sin(time * .4) + (Math.random() - .5) * .006, y: .03 * Math.cos(time * .35) + (Math.random() - .5) * .006, z: -.001 * Math.sin(time * .1) + (Math.random() - .5) * .002 },
+    gyroscope: { x: 1.2 * Math.cos(time * .3) + (Math.random() - .5) * .18, y: .8 * Math.sin(time * .23) + (Math.random() - .5) * .14, z: (Math.random() - .5) * .08 },
     heading,
     ranges: anchors.map((anchor, stationId) => ({ stationId, distance: Math.hypot(...truth.map((value, axis) => value - anchor[axis])) + noise(stationId) }))
   };
 };
 
-export const stepVirtual = () => {
+export const stepVirtual = (algorithm = "ekf") => {
   const measurement = virtualMeasurements();
-  predict(measurement.acceleration, measurement.gyroscope);
-  updateUwb(measurement.ranges);
+  predict(measurement.acceleration, measurement.gyroscope, Date.now(), algorithm);
+  updateUwb(measurement.ranges, algorithm);
   // Simulated heading reference (e.g. a calibrated IMU yaw reference).
-  state.quaternion = [Math.cos(measurement.heading / 2), 0, 0, Math.sin(measurement.heading / 2)];
+  const target = algorithm === "complementary" ? complementaryState : algorithm === "weighted_average" ? weightedAverageState : state;
+  target.quaternion = [Math.cos(measurement.heading / 2), 0, 0, Math.sin(measurement.heading / 2)];
+  return measurement;
 };
 
-export const getEsEkfState = () => ({
-  position: Object.fromEntries(['x', 'y', 'z'].map((axis, index) => [axis, Number(state.position[index].toFixed(3))])),
-  quaternion: Object.fromEntries(['w', 'x', 'y', 'z'].map((axis, index) => [axis, Number(state.quaternion[index].toFixed(5))])),
-  orientation: Object.fromEntries(Object.entries(eulerFromQuaternion(state.quaternion)).map(([key, value]) => [key, Number(value.toFixed(2))])),
+// A single virtual raw sample is deliberately fed to every filter so their
+// historical paths can be compared fairly instead of each receiving new noise.
+export const stepVirtualAll = () => {
+  const measurement = virtualMeasurements();
+  for (const algorithm of ["ekf", "complementary", "weighted_average"]) {
+    predict(measurement.acceleration, measurement.gyroscope, Date.now(), algorithm);
+    updateUwb(measurement.ranges, algorithm);
+    const target = algorithm === "complementary" ? complementaryState : algorithm === "weighted_average" ? weightedAverageState : state;
+    target.quaternion = [Math.cos(measurement.heading / 2), 0, 0, Math.sin(measurement.heading / 2)];
+  }
+  return measurement;
+};
+
+export const resetAllFilters = (timestamp = Date.now()) => { resetState(state); resetState(complementaryState); resetState(weightedAverageState); state.lastUpdate = timestamp; complementaryState.lastUpdate = timestamp; weightedAverageState.lastUpdate = timestamp; };
+export const setHeading = (heading, algorithm = "ekf") => {
+  const target = algorithm === "complementary" ? complementaryState : algorithm === "weighted_average" ? weightedAverageState : state;
+  target.quaternion = [Math.cos(heading / 2), 0, 0, Math.sin(heading / 2)];
+};
+
+export const getFilterState = (algorithm = "ekf") => {
+  const target = algorithm === "complementary" ? complementaryState : algorithm === "weighted_average" ? weightedAverageState : state;
+  return {
+  position: Object.fromEntries(['x', 'y', 'z'].map((axis, index) => [axis, Number(target.position[index].toFixed(3))])),
+  quaternion: Object.fromEntries(['w', 'x', 'y', 'z'].map((axis, index) => [axis, Number(target.quaternion[index].toFixed(5))])),
+  orientation: Object.fromEntries(Object.entries(eulerFromQuaternion(target.quaternion)).map(([key, value]) => [key, Number(value.toFixed(2))])),
   anchorCount: anchors.length,
-  uwbRanges: state.latestRanges,
-  imu: state.latestImu
-});
+  uwbRanges: target.latestRanges,
+  imu: target.latestImu
+};
+};
+
+export const getEsEkfState = () => getFilterState("ekf");

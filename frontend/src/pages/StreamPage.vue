@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import api from '../api';
@@ -12,6 +12,10 @@ const positioning = ref(null), loading = ref(true), saving = ref(false), error =
 const simulationTick = ref(0);
 const livePaused = ref(false), liveFrameKey = ref(0);
 const positionTrail = ref([]);
+const trailVisibility = reactive({ ekf: true, complementary: true, weighted_average: true });
+const trailColors = { ekf: 0x2563eb, complementary: 0x10b981, weighted_average: 0xf59e0b };
+const algorithmTrails = ref({ ekf: [], complementary: [], weighted_average: [] });
+const liveTrail = ref([]);
 const sceneContainer = ref(null), sceneTooltip = ref(null);
 const anchors = [
   { id: 1, x: 0, y: 0, z: 0 }, { id: 2, x: 20, y: 0, z: 0 },
@@ -27,7 +31,7 @@ const rawScrews = [
 ];
 let positionTimer;
 let lastHistoryPositionSecond = -1;
-let renderer, scene, camera, controls, deviceGroup, screwGroup, trailLine, raycaster, pointer, sceneFrame, resizeObserver;
+let renderer, scene, camera, controls, deviceGroup, deviceGroups, screwGroup, trailLines, raycaster, pointer, sceneFrame, resizeObserver;
 const rawScrewGroups = new Map();
 
 const activeOperation = computed(() => operations.value
@@ -68,8 +72,15 @@ const cubeStyle = computed(() => {
 });
 const format = (value) => Number(value ?? 0).toFixed(3);
 const rebuildDatabaseTrail = () => {
+  if (sourceMode.value === 'live') {
+    algorithmTrails.value = Object.fromEntries(Object.keys(trailColors).map((algorithm) => [algorithm, algorithm === fusionAlgorithm.value ? liveTrail.value : []]));
+    positionTrail.value = liveTrail.value;
+    return;
+  }
   const cutoff = sourceMode.value === 'history' ? (selectedVideo.value?.startedAt ? selectedVideo.value.startedAt * 1000 + currentTime.value * 1000 : new Date(activeDetection.value?.timestamp || 0).getTime()) : Infinity;
-  positionTrail.value = telemetryRecords.value.filter((item) => new Date(item.timestamp).getTime() <= cutoff).map((item) => item.telemetry?.position).filter(Boolean).slice(-40).map((point) => ({ ...point }));
+  const trails = Object.fromEntries(Object.keys(trailColors).map((algorithm) => [algorithm, telemetryRecords.value.filter((item) => item.fusionAlgorithm === algorithm && new Date(item.timestamp).getTime() <= cutoff).map((item) => item.telemetry?.position).filter(Boolean).slice(-80).map((point) => ({ ...point }))]));
+  algorithmTrails.value = trails;
+  positionTrail.value = trails[fusionAlgorithm.value] || [];
 };
 const toScenePosition = (point) => new THREE.Vector3(Number(point?.x || 0), Number(point?.z || 0), Number(point?.y || 0));
 const anchorPosition = (anchor) => toScenePosition(anchor);
@@ -88,18 +99,23 @@ const createScrewIcon = (color = 0xf59e0b) => {
   const head = new THREE.Mesh(new THREE.CylinderGeometry(.105, .105, .045, 16), material); head.rotation.z = Math.PI / 2; head.position.x = -.14;
   group.add(body, head); group.userData.material = material; return group;
 };
+const createDeviceIcon = (color) => {
+  const group = new THREE.Group(); const dot = new THREE.Mesh(new THREE.SphereGeometry(.12, 20, 16), new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: .22 })); const beam = new THREE.Mesh(new THREE.ConeGeometry(.45, 1.2, 24, 1, true), new THREE.MeshBasicMaterial({ color, transparent: true, opacity: .2, side: THREE.DoubleSide })); beam.rotation.x = -Math.PI / 2; beam.position.z = .6; group.add(dot, beam); return group;
+};
 const updateThreeScene = () => {
   if (!scene || !positioning.value || !deviceGroup || !screwGroup) return;
   const telemetry = positioning.value.telemetry;
+  const showDevicePath = sourceMode.value === 'live' || Object.values(trailVisibility).some(Boolean);
+  deviceGroup.visible = false;
   deviceGroup.position.copy(toScenePosition(telemetry.position));
   const radians = Math.PI / 180, o = telemetry.orientation;
   deviceGroup.rotation.set(o.pitch * radians, -o.yaw * radians, o.roll * radians, 'YXZ');
+  Object.entries(deviceGroups || {}).forEach(([algorithm, group]) => { const trail = algorithmTrails.value[algorithm] || []; const visible = sourceMode.value === 'live' ? algorithm === fusionAlgorithm.value : trailVisibility[algorithm]; group.visible = visible && trail.length > 0; if (!group.visible) return; group.position.copy(toScenePosition(trail.at(-1))); group.rotation.set(o.pitch * radians, -o.yaw * radians, o.roll * radians, 'YXZ'); addHoverTarget(group, `${algorithm} device: ${format(trail.at(-1).x)}, ${format(trail.at(-1).y)}, ${format(trail.at(-1).z)} m`); });
   screwGroup.position.copy(toScenePosition(positioning.value.absolutePosition));
   screwGroup.visible = Boolean(positioning.value.absolutePosition) && !telemetry.workspace;
   addHoverTarget(deviceGroup, `設備：X ${format(telemetry.position.x)}、Y ${format(telemetry.position.y)}、Z ${format(telemetry.position.z)} m；Roll ${format(o.roll)}°、Pitch ${format(o.pitch)}°、Yaw ${format(o.yaw)}°`);
   if (positioning.value.absolutePosition) addHoverTarget(screwGroup, `螺絲：X ${format(positioning.value.absolutePosition.x)}、Y ${format(positioning.value.absolutePosition.y)}、Z ${format(positioning.value.absolutePosition.z)} m`);
-  const geometry = new THREE.BufferGeometry().setFromPoints(positionTrail.value.map(toScenePosition));
-  trailLine.geometry.dispose(); trailLine.geometry = geometry;
+  Object.entries(trailLines || {}).forEach(([algorithm, line]) => { const geometry = new THREE.BufferGeometry().setFromPoints((algorithmTrails.value[algorithm] || []).map(toScenePosition)); line.geometry.dispose(); line.geometry = geometry; line.visible = trailVisibility[algorithm]; });
   const workspaceScrews = telemetry.workspace?.screws || rawScrews;
   workspaceScrews.forEach((screw) => {
     const group = rawScrewGroups.get(screw.id); if (!group) return;
@@ -119,8 +135,9 @@ const initThreeScene = async () => {
   const floor = new THREE.Mesh(new THREE.PlaneGeometry(20, 12), new THREE.MeshStandardMaterial({ color: 0xf8fafc, roughness: .95 })); floor.rotation.x = -Math.PI / 2; floor.position.set(10, -.02, 6); scene.add(floor);
   const grid = new THREE.GridHelper(20, 20, 0xcbd5e1, 0xe2e8f0); grid.scale.z = .6; grid.position.set(10, 0, 6); scene.add(grid);
   anchors.forEach((anchor) => scene.add(createAnchorIcon(anchor)));
+  deviceGroups = Object.fromEntries(Object.entries(trailColors).map(([algorithm, color]) => { const group = createDeviceIcon(color); scene.add(group); return [algorithm, group]; }));
   deviceGroup = new THREE.Group(); const deviceDot = new THREE.Mesh(new THREE.SphereGeometry(.12, 20, 16), new THREE.MeshStandardMaterial({ color: 0x10b981, emissive: 0x046c4e, emissiveIntensity: .35 })); const beam = new THREE.Mesh(new THREE.ConeGeometry(.45, 1.2, 24, 1, true), new THREE.MeshBasicMaterial({ color: 0x34d399, transparent: true, opacity: .2, side: THREE.DoubleSide })); beam.rotation.x = -Math.PI / 2; beam.position.z = .6; deviceGroup.add(deviceDot, beam); scene.add(deviceGroup);
-  screwGroup = createScrewIcon(); scene.add(screwGroup); rawScrews.forEach((screw) => { const group = createScrewIcon(screw.type.includes('M4') ? 0x2563eb : 0x9333ea); group.position.copy(toScenePosition(screw)); addHoverTarget(group, `${screw.type} ${screw.id}：X ${screw.x}、Y ${screw.y}、Z ${screw.z} m`); rawScrewGroups.set(screw.id, group); scene.add(group); }); trailLine = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0xdc2626, linewidth: 1 })); scene.add(trailLine);
+  screwGroup = createScrewIcon(); scene.add(screwGroup); rawScrews.forEach((screw) => { const group = createScrewIcon(screw.type.includes('M4') ? 0x2563eb : 0x9333ea); group.position.copy(toScenePosition(screw)); addHoverTarget(group, `${screw.type} ${screw.id}：X ${screw.x}、Y ${screw.y}、Z ${screw.z} m`); rawScrewGroups.set(screw.id, group); scene.add(group); }); trailLines = Object.fromEntries(Object.entries(trailColors).map(([algorithm, color]) => { const line = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color })); scene.add(line); return [algorithm, line]; }));
   raycaster = new THREE.Raycaster(); pointer = new THREE.Vector2(); renderer.domElement.addEventListener('pointermove', showSceneTooltip);
   resizeObserver = new ResizeObserver(resizeThreeScene); resizeObserver.observe(sceneContainer.value); resizeThreeScene(); updateThreeScene(); renderThreeScene();
 };
@@ -145,28 +162,32 @@ const refreshOperations = async () => { operations.value = (await api.get('/oper
 const refreshPositioning = async () => {
   if (!selectedOperationId.value) return;
   try {
-    const params = { source: sourceMode.value };
+    const params = { source: sourceMode.value, algorithm: fusionAlgorithm.value };
     if (sourceMode.value === 'history' && selectedVideo.value?.startedAt) {
       params.at = selectedVideo.value.startedAt * 1000 + currentTime.value * 1000;
       telemetryRecords.value = (await api.get(`/operator-telemetry/${selectedOperationId.value}`, { params: { at: params.at } })).data;
     }
     if (activeDetection.value?._id && activeDetection.value._id !== 'simulated-screw') params.detectionId = activeDetection.value._id;
     positioning.value = (await api.get(`/positioning/latest/${selectedOperationId.value}`, { params })).data;
+    if (sourceMode.value === 'live' && positioning.value?.telemetry?.position) {
+      liveTrail.value = [...liveTrail.value, { ...positioning.value.telemetry.position }].slice(-80);
+    }
     rebuildDatabaseTrail();
     await initThreeScene(); updateThreeScene();
   } catch (err) { error.value = err.response?.data?.error || '無法讀取定位資料。'; }
 };
 const refreshLiveDetections = async () => {
-  if (!selectedOperationId.value || sourceMode.value !== 'live') return;
+  if (sourceMode.value !== 'live') return;
   try {
-    const [detectionRes, telemetryRes] = await Promise.all([api.get(`/detections/${selectedOperationId.value}`), api.get(`/operator-telemetry/${selectedOperationId.value}`)]);
+    if (!selectedOperationId.value) { await refreshOperations(); selectedOperationId.value = activeOperation.value?._id || ''; }
+    if (!selectedOperationId.value) return;
+    const detectionRes = await api.get(`/detections/${selectedOperationId.value}`);
     detections.value = detectionRes.data.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
-    telemetryRecords.value = telemetryRes.data;
   } catch { /* Keep the last valid detection while the stream is reconnecting. */ }
 };
 const saveFusion = async () => {
   saving.value = true; message.value = ''; error.value = '';
-  try { await api.post('/simulation/config', { fusionAlgorithm: fusionAlgorithm.value }); message.value = '融合設定已傳送至後端與 AI。'; await refreshPositioning(); }
+  try { await api.post('/simulation/config', { fusionAlgorithm: fusionAlgorithm.value }); await refreshPositioning(); }
   catch (err) { error.value = err.response?.data?.error || '融合設定傳送失敗。'; }
   finally { saving.value = false; }
 };
@@ -179,12 +200,15 @@ const toggleLiveDisplay = async () => { livePaused.value = !livePaused.value; if
 
 watch(selectedOperationId, () => { positionTrail.value = []; lastHistoryPositionSecond = -1; if (sourceMode.value === 'history') loadHistory(); else refreshPositioning(); });
 watch(viewMode, () => { selectedVideoName.value = modeVideos.value[0]?.filename || ''; currentTime.value = 0; });
+watch(fusionAlgorithm, () => { if (sourceMode.value === 'live') { liveTrail.value = []; Object.keys(trailVisibility).forEach((algorithm) => { trailVisibility[algorithm] = algorithm === fusionAlgorithm.value; }); } });
 watch(sourceMode, async () => {
   if (sourceMode.value === 'history') {
     await refreshOperations();
     selectedOperationId.value = historyOperations.value[0]?._id || '';
     if (!selectedOperationId.value) { videos.value = []; detections.value = []; positioning.value = null; }
   } else {
+    liveTrail.value = [];
+    Object.keys(trailVisibility).forEach((algorithm) => { trailVisibility[algorithm] = algorithm === fusionAlgorithm.value; });
     selectedOperationId.value = activeOperation.value?._id || '';
     refreshLiveDetections(); refreshPositioning();
   }
@@ -194,7 +218,7 @@ onMounted(async () => {
     const [ops, config] = await Promise.all([api.get('/operations'), api.get('/simulation/config')]);
     operations.value = ops.data; fusionAlgorithm.value = config.data.fusionAlgorithm;
     selectedOperationId.value = historyOperations.value[0]?._id || '';
-    positionTimer = window.setInterval(async () => { if (sourceMode.value === 'live' && !livePaused.value) { simulationTick.value += 1; await refreshLiveDetections(); await refreshPositioning(); } }, 500);
+    positionTimer = window.setInterval(async () => { if (sourceMode.value === 'live' && !livePaused.value) { simulationTick.value += 1; await Promise.all([refreshLiveDetections(), refreshPositioning()]); } }, 200);
   } catch { error.value = '無法讀取系統資料。'; }
   finally { loading.value = false; }
 });
@@ -227,8 +251,8 @@ onUnmounted(() => { window.clearInterval(positionTimer); disposeThreeScene(); })
       </aside>
     </div>
     <section v-if="positioning" class="telemetry-dashboard">
-      <div class="position-scene-card"><div class="scene-heading"><div><h3>操作空間建模</h3></div><span>拖曳可旋轉、滾輪可縮放；停留於圖示可查看座標</span></div><p class="nearby-screw-alert" :class="{ inactive: !positioning.workspace?.notification }">{{ positioning.workspace?.notification ? `提示：${positioning.workspace.notification}` : '附近目前沒有螺絲。' }}</p><div ref="sceneContainer" class="three-scene"><div ref="sceneTooltip" class="three-tooltip"></div></div><div class="scene-legend"><span><i class="legend-anchor"></i>基地站</span><span><i class="legend-device"></i>設備／攝影機光錐</span><span><i class="legend-screw"></i>M4（藍）／M6（紫）；金色為可辨識</span><span><i class="legend-trail"></i>移動軌跡</span></div></div>
-      <aside class="fusion-data-card"><h3>UWB + IMU 融合資料</h3><div class="current-position"><strong>ES-EKF 輸出設備位置</strong><span>X {{ format(positioning.telemetry.position.x) }}　Y {{ format(positioning.telemetry.position.y) }}　Z {{ format(positioning.telemetry.position.z) }} m</span></div><div class="sensor-columns"><div><h4>UWB：8 個基地站距離（m）</h4><div class="uwb-range-grid"><span v-for="range in (positioning.telemetry.uwbRanges || [])" :key="range.stationId">站 {{ range.stationId + 1 }}：{{ format(range.distance) }}</span></div></div><div class="imu-readout"><h4>IMU 即時量測</h4><p>加速度：{{ format(positioning.telemetry.imu?.acceleration?.x) }}, {{ format(positioning.telemetry.imu?.acceleration?.y) }}, {{ format(positioning.telemetry.imu?.acceleration?.z) }} m/s²</p><p>角速度：{{ format(positioning.telemetry.imu?.gyroscope?.x) }}, {{ format(positioning.telemetry.imu?.gyroscope?.y) }}, {{ format(positioning.telemetry.imu?.gyroscope?.z) }} °/s</p><p>姿態：Roll {{ format(positioning.telemetry.orientation.roll) }}°、Pitch {{ format(positioning.telemetry.orientation.pitch) }}°、Yaw {{ format(positioning.telemetry.orientation.yaw) }}°</p></div></div><label>UWB + IMU 融合演算法<select v-model="fusionAlgorithm"><option value="ekf">Error-State Extended Kalman Filter (ES-EKF)</option><option value="complementary">Complementary Filter</option><option value="weighted_average">Weighted Average</option></select></label><button type="button" :disabled="saving" @click="saveFusion">{{ saving ? '傳送中…' : '套用融合設定' }}</button><RouterLink class="calibration-link" to="/settings/camera-extrinsics">設定 RGB-D 相機外參 →</RouterLink></aside>
+      <div class="position-scene-card"><div class="scene-heading"><div><h3>操作空間建模</h3></div><span>拖曳可旋轉、滾輪可縮放；停留於圖示可查看座標</span></div><p class="nearby-screw-alert" :class="{ inactive: !positioning.workspace?.notification }">{{ positioning.workspace?.notification ? `提示：${positioning.workspace.notification}` : '附近目前沒有螺絲。' }}</p><div ref="sceneContainer" class="three-scene"><div ref="sceneTooltip" class="three-tooltip"></div></div><div class="scene-legend"><span><i class="legend-anchor"></i>基地站</span><span><i class="legend-device"></i>設備／攝影機光錐</span><span><i class="legend-screw"></i>M4（藍）／M6（紫）；金色為可辨識</span></div></div>
+      <aside class="fusion-data-card"><h3>UWB + IMU 融合資料</h3><div class="current-position"><strong>融合輸出設備位置</strong><span>X {{ format(positioning.telemetry.position.x) }}　Y {{ format(positioning.telemetry.position.y) }}　Z {{ format(positioning.telemetry.position.z) }} m</span></div><div class="sensor-columns"><div><h4>UWB：8 個基地站距離（m）</h4><div class="uwb-range-grid"><span v-for="range in (positioning.telemetry.uwbRanges || [])" :key="range.stationId">站 {{ range.stationId + 1 }}：{{ format(range.distance) }}</span></div></div><div class="imu-readout"><h4>IMU 即時量測</h4><p>加速度：{{ format(positioning.telemetry.imu?.acceleration?.x) }}, {{ format(positioning.telemetry.imu?.acceleration?.y) }}, {{ format(positioning.telemetry.imu?.acceleration?.z) }} m/s²</p><p>角速度：{{ format(positioning.telemetry.imu?.gyroscope?.x) }}, {{ format(positioning.telemetry.imu?.gyroscope?.y) }}, {{ format(positioning.telemetry.imu?.gyroscope?.z) }} °/s</p><p>姿態：Roll {{ format(positioning.telemetry.orientation.roll) }}°、Pitch {{ format(positioning.telemetry.orientation.pitch) }}°、Yaw {{ format(positioning.telemetry.orientation.yaw) }}°</p></div></div><label v-if="sourceMode === 'live'">UWB + IMU 融合演算法<select v-model="fusionAlgorithm" @change="saveFusion"><option value="ekf">Error-State Extended Kalman Filter (ES-EKF)</option><option value="complementary">Complementary Filter</option><option value="weighted_average">Weighted Average</option></select></label><div v-else class="path-algorithm-menu"><strong>演算法路徑</strong><label class="trail-toggle trail-ekf"><input v-model="trailVisibility.ekf" type="checkbox" @change="updateThreeScene" /><span>ES-EKF</span></label><label class="trail-toggle trail-complementary"><input v-model="trailVisibility.complementary" type="checkbox" @change="updateThreeScene" /><span>互補濾波</span></label><label class="trail-toggle trail-weighted"><input v-model="trailVisibility.weighted_average" type="checkbox" @change="updateThreeScene" /><span>加權平均</span></label></div><RouterLink class="calibration-link" to="/settings/camera-extrinsics">設定 RGB-D 相機外參 →</RouterLink></aside>
     </section>
     <p v-if="message" class="success">{{ message }}</p><p v-if="error" class="alert">{{ error }}</p>
   </section>

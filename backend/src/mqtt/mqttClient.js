@@ -2,8 +2,11 @@ import mqtt from "mqtt";
 import Operation from "../models/Operation.js";
 import Detection from "../models/Detection.js";
 import User from "../models/User.js";
+import RawSensorMeasurement from "../models/RawSensorMeasurement.js";
+import OperatorTelemetry from "../models/OperatorTelemetry.js";
 import { getSimulationConfigValue } from "../controllers/simulationController.js";
-import { getEsEkfState, predict, stepVirtual, updateUwb } from "../positioning/esEkf.js";
+import { recordFusionTelemetrySet } from "../controllers/operatorTelemetryController.js";
+import { getFilterState, predict, resetAllFilters, setHeading, stepVirtual, updateUwb } from "../positioning/esEkf.js";
 import { getWorkspaceState } from "../positioning/screwWorkspace.js";
 
 const client = mqtt.connect("mqtt://localhost:1883");
@@ -12,10 +15,14 @@ let hasUwbRanges = false;
 let hasImuData = false;
 let lastNotificationKey = '';
 let lastNotificationAt = 0;
+let activeOperationId = null;
+const pendingRawWrites = new Set();
+const fusionAlgorithms = ["ekf", "complementary", "weighted_average"];
+export const setActiveTelemetryOperation = (operationId) => { activeOperationId = operationId ? String(operationId) : null; };
+export const beginTelemetryOperation = (operationId) => { resetAllFilters(); setActiveTelemetryOperation(operationId); };
 
-export const getDeviceTelemetry = () => {
-  if (!hasUwbRanges || !hasImuData) stepVirtual();
-  const filter = getEsEkfState();
+const buildTelemetry = (fusionAlgorithm) => {
+  const filter = getFilterState(fusionAlgorithm);
   const telemetry = {
     position: filter.position,
     orientation: filter.orientation,
@@ -25,7 +32,57 @@ export const getDeviceTelemetry = () => {
     imu: filter.imu,
     updatedAt: new Date().toISOString()
   };
-  const workspace = getWorkspaceState(telemetry);
+  return { ...telemetry, workspace: getWorkspaceState(telemetry) };
+};
+
+const persistRawFrame = async (source, payload, dataSource = "mqtt", timestamp = Date.now()) => {
+  if (!activeOperationId) return;
+  const write = RawSensorMeasurement.create({ operationId: activeOperationId, timestamp: new Date(timestamp), source, dataSource, payload });
+  pendingRawWrites.add(write);
+  try { await write; } finally { pendingRawWrites.delete(write); }
+};
+
+const activeAlgorithm = () => getSimulationConfigValue().fusionAlgorithm;
+const updateActiveUwb = (ranges) => updateUwb(ranges, activeAlgorithm());
+const updateActiveImu = (acceleration, gyroscope, timestamp) => predict(acceleration, gyroscope, timestamp, activeAlgorithm());
+
+export const rebuildTelemetryForOperation = async (operationId) => {
+  await Promise.allSettled([...pendingRawWrites]);
+  const samples = await RawSensorMeasurement.find({ operationId }).sort({ timestamp: 1 }).lean();
+  if (!samples.length) return { samples: 0, telemetry: 0 };
+  await OperatorTelemetry.deleteMany({ operationId });
+  resetAllFilters(new Date(samples[0].timestamp).getTime());
+  for (const sample of samples) {
+    const time = new Date(sample.timestamp).getTime();
+    if (sample.source === "uwb") fusionAlgorithms.forEach((algorithm) => updateUwb(sample.payload.ranges || [], algorithm));
+    if (sample.source === "imu") fusionAlgorithms.forEach((algorithm) => predict(sample.payload.acceleration || {}, sample.payload.gyroscope || {}, time, algorithm));
+    if (sample.source === "simulation") {
+      fusionAlgorithms.forEach((algorithm) => {
+        predict(sample.payload.acceleration || {}, sample.payload.gyroscope || {}, time, algorithm);
+        updateUwb(sample.payload.ranges || [], algorithm);
+        if (Number.isFinite(sample.payload.heading)) setHeading(sample.payload.heading, algorithm);
+      });
+    }
+    await recordFusionTelemetrySet(operationId, time, Object.fromEntries(fusionAlgorithms.map((algorithm) => [algorithm, buildTelemetry(algorithm)])), sample.dataSource);
+  }
+  const telemetry = await OperatorTelemetry.countDocuments({ operationId });
+  console.log(`Rebuilt ${telemetry} telemetry records from ${samples.length} raw samples for operation ${operationId}`);
+  return { samples: samples.length, telemetry };
+};
+export const finalizeTelemetryOperation = async (operationId) => {
+  const result = await rebuildTelemetryForOperation(operationId);
+  if (activeOperationId === String(operationId)) setActiveTelemetryOperation(null);
+  return result;
+};
+
+export const getDeviceTelemetry = () => {
+  const fusionAlgorithm = getSimulationConfigValue().fusionAlgorithm;
+  if (!hasUwbRanges || !hasImuData) {
+    const measurement = stepVirtual(fusionAlgorithm);
+    persistRawFrame("simulation", measurement, "simulation").catch((error) => console.error("Failed to persist virtual sensor sample:", error.message));
+  }
+  const telemetry = buildTelemetry(fusionAlgorithm);
+  const workspace = telemetry.workspace;
   const notificationKey = workspace.notification;
   if (notificationKey && (notificationKey !== lastNotificationKey || Date.now() - lastNotificationAt > 5000)) {
     client.publish("vision/notification", JSON.stringify({ level: "info", text: notificationKey, timestamp: telemetry.updatedAt }), { qos: 1 });
@@ -33,7 +90,7 @@ export const getDeviceTelemetry = () => {
     lastNotificationAt = Date.now();
   }
   if (!notificationKey) lastNotificationKey = '';
-  return { ...telemetry, workspace };
+  return telemetry;
 };
 
 client.on("connect", () => {
@@ -58,11 +115,15 @@ client.on("message", async (topic, message) => {
     } else if (topic === "vision/detection") {
       await handleDetection(data);
     } else if (topic === "vision/uwb/ranges" && Array.isArray(data.ranges)) {
-      updateUwb(data.ranges);
+      const timestamp = Number(data.timestamp) || Date.now();
+      updateActiveUwb(data.ranges);
       hasUwbRanges = true;
+      await persistRawFrame("uwb", { ranges: data.ranges }, "mqtt", timestamp);
     } else if (topic === "vision/imu/data" && data.acceleration && data.gyroscope) {
-      predict(data.acceleration, data.gyroscope);
+      const timestamp = Number(data.timestamp) || Date.now();
+      updateActiveImu(data.acceleration, data.gyroscope, timestamp);
       hasImuData = true;
+      await persistRawFrame("imu", { acceleration: data.acceleration, gyroscope: data.gyroscope }, "mqtt", timestamp);
     }
   } catch (err) {
     console.error("MQTT parse error:", err);
@@ -89,6 +150,7 @@ async function handleOperationStart(data) {
       startTime: new Date(),
       description: "Started via MQTT"
     });
+    beginTelemetryOperation(operation._id);
 
     console.log(`Operation created: ${operation._id}`);
 
@@ -146,6 +208,7 @@ async function handleOperationEnd(data) {
     }
 
     console.log(`Operation ended: ${opID}`);
+    await finalizeTelemetryOperation(opID);
     try {
       await fetch("http://localhost:8000/api/operation-end", { method: "POST" });
     } catch (err) {
