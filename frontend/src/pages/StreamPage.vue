@@ -109,8 +109,11 @@ const updateThreeScene = () => {
   deviceGroup.visible = false;
   deviceGroup.position.copy(toScenePosition(telemetry.position));
   const radians = Math.PI / 180, o = telemetry.orientation;
-  deviceGroup.rotation.set(o.pitch * radians, -o.yaw * radians, o.roll * radians, 'YXZ');
-  Object.entries(deviceGroups || {}).forEach(([algorithm, group]) => { const trail = algorithmTrails.value[algorithm] || []; const visible = sourceMode.value === 'live' ? algorithm === fusionAlgorithm.value : trailVisibility[algorithm]; group.visible = visible && trail.length > 0; if (!group.visible) return; group.position.copy(toScenePosition(trail.at(-1))); group.rotation.set(o.pitch * radians, -o.yaw * radians, o.roll * radians, 'YXZ'); addHoverTarget(group, `${algorithm} device: ${format(trail.at(-1).x)}, ${format(trail.at(-1).y)}, ${format(trail.at(-1).z)} m`); });
+  // The scene maps world (X,Y,Z) to Three.js (X,Z,Y), while the cone faces local -Z.
+  // Compensate the fixed axis offset for a camera heading aligned with walking direction.
+  const sceneYaw = -(o.yaw - 90) * radians;
+  deviceGroup.rotation.set(o.pitch * radians, sceneYaw, o.roll * radians, 'YXZ');
+  Object.entries(deviceGroups || {}).forEach(([algorithm, group]) => { const trail = algorithmTrails.value[algorithm] || []; const visible = sourceMode.value === 'live' ? algorithm === fusionAlgorithm.value : trailVisibility[algorithm]; group.visible = visible && trail.length > 0; if (!group.visible) return; group.position.copy(toScenePosition(trail.at(-1))); group.rotation.set(o.pitch * radians, sceneYaw, o.roll * radians, 'YXZ'); addHoverTarget(group, `${algorithm} device: ${format(trail.at(-1).x)}, ${format(trail.at(-1).y)}, ${format(trail.at(-1).z)} m`); });
   screwGroup.position.copy(toScenePosition(positioning.value.absolutePosition));
   screwGroup.visible = Boolean(positioning.value.absolutePosition) && !telemetry.workspace;
   addHoverTarget(deviceGroup, `設備：X ${format(telemetry.position.x)}、Y ${format(telemetry.position.y)}、Z ${format(telemetry.position.z)} m；Roll ${format(o.roll)}°、Pitch ${format(o.pitch)}°、Yaw ${format(o.yaw)}°`);
@@ -210,7 +213,7 @@ watch(sourceMode, async () => {
     liveTrail.value = [];
     Object.keys(trailVisibility).forEach((algorithm) => { trailVisibility[algorithm] = algorithm === fusionAlgorithm.value; });
     selectedOperationId.value = activeOperation.value?._id || '';
-    refreshLiveDetections(); refreshPositioning();
+    await refreshLiveDetections(); await refreshPositioning();
   }
 });
 onMounted(async () => {
@@ -218,7 +221,7 @@ onMounted(async () => {
     const [ops, config] = await Promise.all([api.get('/operations'), api.get('/simulation/config')]);
     operations.value = ops.data; fusionAlgorithm.value = config.data.fusionAlgorithm;
     selectedOperationId.value = historyOperations.value[0]?._id || '';
-    positionTimer = window.setInterval(async () => { if (sourceMode.value === 'live' && !livePaused.value) { simulationTick.value += 1; await Promise.all([refreshLiveDetections(), refreshPositioning()]); } }, 200);
+    positionTimer = window.setInterval(async () => { if (sourceMode.value === 'live' && !livePaused.value) { simulationTick.value += 1; await refreshLiveDetections(); await refreshPositioning(); } }, 200);
   } catch { error.value = '無法讀取系統資料。'; }
   finally { loading.value = false; }
 });
