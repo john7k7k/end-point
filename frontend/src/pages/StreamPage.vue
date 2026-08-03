@@ -6,7 +6,7 @@ import api from '../api';
 
 const operations = ref([]), videos = ref([]), detections = ref([]), telemetryRecords = ref([]);
 const sourceMode = ref('history'), selectedOperationId = ref(''), selectedVideoName = ref('');
-const viewMode = ref('color'), fusionAlgorithm = ref('ekf'), showDetections = ref(true);
+const viewMode = ref('color'), fusionAlgorithm = ref('ekf'), screwFusionAlgorithm = ref('average'), showDetections = ref(true);
 const currentTime = ref(0), duration = ref(0), isPlaying = ref(false), videoPlayer = ref(null);
 const positioning = ref(null), loading = ref(true), saving = ref(false), error = ref(''), message = ref('');
 const simulationTick = ref(0);
@@ -105,7 +105,6 @@ const createDeviceIcon = (color) => {
 const updateThreeScene = () => {
   if (!scene || !positioning.value || !deviceGroup || !screwGroup) return;
   const telemetry = positioning.value.telemetry;
-  const showDevicePath = sourceMode.value === 'live' || Object.values(trailVisibility).some(Boolean);
   deviceGroup.visible = false;
   deviceGroup.position.copy(toScenePosition(telemetry.position));
   const radians = Math.PI / 180, o = telemetry.orientation;
@@ -115,17 +114,23 @@ const updateThreeScene = () => {
   deviceGroup.rotation.set(o.pitch * radians, sceneYaw, o.roll * radians, 'YXZ');
   Object.entries(deviceGroups || {}).forEach(([algorithm, group]) => { const trail = algorithmTrails.value[algorithm] || []; const visible = sourceMode.value === 'live' ? algorithm === fusionAlgorithm.value : trailVisibility[algorithm]; group.visible = visible && trail.length > 0; if (!group.visible) return; group.position.copy(toScenePosition(trail.at(-1))); group.rotation.set(o.pitch * radians, sceneYaw, o.roll * radians, 'YXZ'); addHoverTarget(group, `${algorithm} device: ${format(trail.at(-1).x)}, ${format(trail.at(-1).y)}, ${format(trail.at(-1).z)} m`); });
   screwGroup.position.copy(toScenePosition(positioning.value.absolutePosition));
-  screwGroup.visible = Boolean(positioning.value.absolutePosition) && !telemetry.workspace;
+  // A localized screw replaces its matching workspace reference icon, avoiding
+  // a duplicate marker while preserving the original screws that were unseen.
+  screwGroup.visible = false;
   addHoverTarget(deviceGroup, `設備：X ${format(telemetry.position.x)}、Y ${format(telemetry.position.y)}、Z ${format(telemetry.position.z)} m；Roll ${format(o.roll)}°、Pitch ${format(o.pitch)}°、Yaw ${format(o.yaw)}°`);
   if (positioning.value.absolutePosition) addHoverTarget(screwGroup, `螺絲：X ${format(positioning.value.absolutePosition.x)}、Y ${format(positioning.value.absolutePosition.y)}、Z ${format(positioning.value.absolutePosition.z)} m`);
   Object.entries(trailLines || {}).forEach(([algorithm, line]) => { const geometry = new THREE.BufferGeometry().setFromPoints((algorithmTrails.value[algorithm] || []).map(toScenePosition)); line.geometry.dispose(); line.geometry = geometry; line.visible = trailVisibility[algorithm]; });
   const workspaceScrews = telemetry.workspace?.screws || rawScrews;
+  const localizedScrews = new Map((positioning.value.localizedScrews || []).map((item) => [item.screwId, item]));
   workspaceScrews.forEach((screw) => {
     const group = rawScrewGroups.get(screw.id); if (!group) return;
+    const localized = localizedScrews.get(screw.id);
+    const displayedPosition = localized?.position || screw;
+    group.position.copy(toScenePosition(displayedPosition));
     const typeColor = screw.type.includes('M4') ? 0x2563eb : 0x9333ea;
-    group.userData.material.color.setHex(screw.visible ? 0xf59e0b : typeColor);
-    group.userData.material.emissive?.setHex(screw.visible ? 0x6b3d00 : 0x000000);
-    addHoverTarget(group, `${screw.type} ${screw.id}：X ${format(screw.x)}、Y ${format(screw.y)}、Z ${format(screw.z)} m${screw.visible ? `；已在攝影機視野內，深度 ${format(screw.depth)} m` : '；未進入攝影機辨識範圍'}`);
+    group.userData.material.color.setHex(localized || screw.visible ? 0xf59e0b : typeColor);
+    group.userData.material.emissive?.setHex(localized || screw.visible ? 0x6b3d00 : 0x000000);
+    addHoverTarget(group, `${screw.type} ${screw.id}：X ${format(displayedPosition.x)}、Y ${format(displayedPosition.y)}、Z ${format(displayedPosition.z)} m${localized ? `；已由 ${positioning.value.screwFusionLabel || '螺絲融合'} 更新（${localized.observationCount} 幀）` : screw.visible ? `；已在攝影機視野內，深度 ${format(screw.depth)} m` : '；未進入攝影機辨識範圍'}`);
   });
 };
 const initThreeScene = async () => {
@@ -165,7 +170,7 @@ const refreshOperations = async () => { operations.value = (await api.get('/oper
 const refreshPositioning = async () => {
   if (!selectedOperationId.value) return;
   try {
-    const params = { source: sourceMode.value, algorithm: fusionAlgorithm.value };
+    const params = { source: sourceMode.value, algorithm: fusionAlgorithm.value, screwAlgorithm: screwFusionAlgorithm.value };
     if (sourceMode.value === 'history' && selectedVideo.value?.startedAt) {
       params.at = selectedVideo.value.startedAt * 1000 + currentTime.value * 1000;
       telemetryRecords.value = (await api.get(`/operator-telemetry/${selectedOperationId.value}`, { params: { at: params.at } })).data;
@@ -190,8 +195,14 @@ const refreshLiveDetections = async () => {
 };
 const saveFusion = async () => {
   saving.value = true; message.value = ''; error.value = '';
-  try { await api.post('/simulation/config', { fusionAlgorithm: fusionAlgorithm.value }); await refreshPositioning(); }
+  try { await api.post('/simulation/config', { fusionAlgorithm: fusionAlgorithm.value, screwFusionAlgorithm: screwFusionAlgorithm.value }); await refreshPositioning(); }
   catch (err) { error.value = err.response?.data?.error || '融合設定傳送失敗。'; }
+  finally { saving.value = false; }
+};
+const saveScrewFusion = async () => {
+  saving.value = true; message.value = ''; error.value = '';
+  try { await api.post('/simulation/config', { fusionAlgorithm: fusionAlgorithm.value, screwFusionAlgorithm: screwFusionAlgorithm.value }); await refreshPositioning(); }
+  catch (err) { error.value = err.response?.data?.error || '螺絲定位融合設定傳送失敗。'; }
   finally { saving.value = false; }
 };
 const updatePlayback = (event) => { currentTime.value = event.target.currentTime; duration.value = event.target.duration || 0; };
@@ -219,7 +230,7 @@ watch(sourceMode, async () => {
 onMounted(async () => {
   try {
     const [ops, config] = await Promise.all([api.get('/operations'), api.get('/simulation/config')]);
-    operations.value = ops.data; fusionAlgorithm.value = config.data.fusionAlgorithm;
+    operations.value = ops.data; fusionAlgorithm.value = config.data.fusionAlgorithm; screwFusionAlgorithm.value = config.data.screwFusionAlgorithm || 'average';
     selectedOperationId.value = historyOperations.value[0]?._id || '';
     positionTimer = window.setInterval(async () => { if (sourceMode.value === 'live' && !livePaused.value) { simulationTick.value += 1; await refreshLiveDetections(); await refreshPositioning(); } }, 200);
   } catch { error.value = '無法讀取系統資料。'; }
@@ -250,7 +261,7 @@ onUnmounted(() => { window.clearInterval(positionTimer); disposeThreeScene(); })
         <p v-else class="placeholder">此作業尚未找到歷史影片。</p>
       </div>
       <aside class="stream-sidebar">
-        <section v-if="positioning?.detection" class="side-section screw-position-card"><h3>螺絲定位</h3><p>{{ displayName }}　深度 {{ activeDetection?.depth }}</p><p>模型：{{ positioning.detection.detectionAlgorithm }}<br>融合：{{ positioning.fusionAlgorithm }}</p><p>相機／設備座標：{{ format(positioning.cameraPosition.x) }}, {{ format(positioning.cameraPosition.y) }}, {{ format(positioning.cameraPosition.z) }} m</p><p>螺絲相機座標：{{ format(positioning.screwCameraPosition?.x) }}, {{ format(positioning.screwCameraPosition?.y) }}, {{ format(positioning.screwCameraPosition?.z) }} m</p><p class="absolute-position">融合絕對座標：{{ format(positioning.absolutePosition?.x) }}, {{ format(positioning.absolutePosition?.y) }}, {{ format(positioning.absolutePosition?.z) }} m</p></section>
+        <section v-if="positioning" class="side-section screw-position-card"><h3>螺絲定位</h3><label class="screw-fusion-control">螺絲定位融合演算法<select v-model="screwFusionAlgorithm" :disabled="saving" @change="saveScrewFusion"><option value="average">平均法（多幀座標平均）</option><option value="ekf">EKF（靜態位置濾波）</option><option value="es_ekf">ESKF（誤差狀態濾波）</option><option value="rmv_fgo">RMV-FGO（魯棒多視角因子圖）</option></select></label><template v-if="positioning.detection"><p>{{ displayName }}　深度 {{ activeDetection?.depth }}</p><p>模型：{{ positioning.detection.detectionAlgorithm }}<br>設備 UWB + IMU：{{ positioning.fusionAlgorithm }}</p><p>相機／設備座標：{{ format(positioning.cameraPosition.x) }}, {{ format(positioning.cameraPosition.y) }}, {{ format(positioning.cameraPosition.z) }} m</p><p>螺絲相機座標：{{ format(positioning.screwCameraPosition?.x) }}, {{ format(positioning.screwCameraPosition?.y) }}, {{ format(positioning.screwCameraPosition?.z) }} m</p><p>原始絕對座標：{{ format(positioning.rawAbsolutePosition?.x) }}, {{ format(positioning.rawAbsolutePosition?.y) }}, {{ format(positioning.rawAbsolutePosition?.z) }} m</p><p class="absolute-position">{{ positioning.screwFusionLabel || '螺絲融合' }}結果：{{ format(positioning.absolutePosition?.x) }}, {{ format(positioning.absolutePosition?.y) }}, {{ format(positioning.absolutePosition?.z) }} m</p><small v-if="positioning.screwLocalization">觀測 {{ positioning.screwLocalization.observationCount }} 幀｜創新量 {{ format(positioning.screwLocalization.innovation) }} m｜1σ {{ format(positioning.screwLocalization.uncertainty?.x) }}, {{ format(positioning.screwLocalization.uncertainty?.y) }}, {{ format(positioning.screwLocalization.uncertainty?.z) }} m</small><small v-else></small></template><p v-else class="no-screw-localization">尚未偵測到螺絲；選擇的演算法會在下一筆螺絲觀測到達後套用。</p></section>
       </aside>
     </div>
     <section v-if="positioning" class="telemetry-dashboard">

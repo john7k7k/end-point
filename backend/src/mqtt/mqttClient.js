@@ -8,6 +8,7 @@ import { getSimulationConfigValue } from "../controllers/simulationController.js
 import { recordFusionTelemetrySet } from "../controllers/operatorTelemetryController.js";
 import { getFilterState, predict, resetAllFilters, setHeading, stepVirtual, updateUwb } from "../positioning/esEkf.js";
 import { getWorkspaceState } from "../positioning/screwWorkspace.js";
+import { persistDetectionWithScrewFusion, rebuildScrewFusionForOperation } from "../positioning/screwFusion.js";
 
 const client = mqtt.connect("mqtt://localhost:1883");
 const AI_ENDPOINT = "http://localhost:8000/api/operation-update";
@@ -209,6 +210,8 @@ async function handleOperationEnd(data) {
 
     console.log(`Operation ended: ${opID}`);
     await finalizeTelemetryOperation(opID);
+    const screwFusion = await rebuildScrewFusionForOperation(opID);
+    console.log(`Rebuilt ${screwFusion.results} screw fusion results for operation ${opID}`);
     try {
       await fetch("http://localhost:8000/api/operation-end", { method: "POST" });
     } catch (err) {
@@ -268,8 +271,10 @@ async function handleDetection(data) {
       y: Number((telemetry.position.y + Math.sin(yaw) * recognizedScrew.cameraPosition.z + Math.cos(yaw) * recognizedScrew.cameraPosition.x).toFixed(3)),
       z: Number((telemetry.position.z + recognizedScrew.cameraPosition.y).toFixed(3))
     };
+    data.rawAbsolutePosition = { ...data.absolutePosition };
+    data.fusionTelemetry = { position: telemetry.position, orientation: telemetry.orientation, quaternion: telemetry.quaternion, uwbRanges: telemetry.uwbRanges, imu: telemetry.imu, workspace: telemetry.workspace, updatedAt: telemetry.updatedAt };
     data.fusionAlgorithm = getSimulationConfigValue().fusionAlgorithm;
-    await Detection.create(data);
+    await persistDetectionWithScrewFusion(data);
 
 
   } catch (err) {

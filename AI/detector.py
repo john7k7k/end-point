@@ -1,6 +1,6 @@
 import random
 
-def detect(frame, imu_data=None, detection_algorithm="mock_yolo", fusion_algorithm="depth_lookup"):
+def detect(frame, imu_data=None, detection_algorithm="mock_yolo", fusion_algorithm="depth_lookup", screw_fusion_algorithm="average"):
     # print(frame.shape)  # (2160, 1920, 3)
 
     # 1. 获取影像尺寸 (1920x2160)
@@ -37,6 +37,10 @@ def detect(frame, imu_data=None, detection_algorithm="mock_yolo", fusion_algorit
         "bbox": detection_result["bbox"]
         ,"detection_algorithm": detection_algorithm
         ,"fusion_algorithm": fusion_algorithm
+        # The backend performs the persisted multi-view fusion after this frame
+        # is transformed into the world frame.  Carry the AI-selected method in
+        # the result so both services share the same configuration contract.
+        ,"screw_fusion_algorithm": screw_fusion_algorithm
     }
 
     if imu_data:

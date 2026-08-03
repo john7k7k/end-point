@@ -47,6 +47,7 @@ def send_result(result_data, video_filename=None):
         "imageId": video_filename or "unknown",
         "objectClass": result_data.get("object", "unknown"),
         "detectionAlgorithm": result_data.get("detection_algorithm", "mock_yolo"),
+        "screwFusionAlgorithm": result_data.get("screw_fusion_algorithm", "average"),
         "bbox": result_data.get("bbox", {}),
         "depth": result_data.get("raw_depth_value", 0),
         "sensors": [

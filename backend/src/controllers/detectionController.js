@@ -1,6 +1,7 @@
 import Detection from "../models/Detection.js";
 import { getDeviceTelemetry } from "../mqtt/mqttClient.js";
 import { getSimulationConfigValue } from "./simulationController.js";
+import { persistDetectionWithScrewFusion } from "../positioning/screwFusion.js";
 
 const attachPositioningData = (data, telemetry) => {
   const recognizedScrew = telemetry.workspace.visibleScrews.sort((a, b) => a.depth - b.depth)[0];
@@ -32,6 +33,7 @@ const attachPositioningData = (data, telemetry) => {
     devicePosition: telemetry.position,
     deviceOrientation: { x: orientation.roll, y: orientation.pitch, z: orientation.yaw },
     cameraPosition: recognizedScrew.cameraPosition,
+    rawAbsolutePosition: absolutePosition,
     absolutePosition,
     fusionTelemetry: { position: telemetry.position, orientation: telemetry.orientation, quaternion: telemetry.quaternion, uwbRanges: telemetry.uwbRanges, imu: telemetry.imu, workspace: telemetry.workspace, updatedAt: telemetry.updatedAt },
     fusionAlgorithm: getSimulationConfigValue().fusionAlgorithm
@@ -53,10 +55,9 @@ export const createDetection = async (req, res) => {
     }
 
     const telemetry = getDeviceTelemetry();
-    const fusionAlgorithm = getSimulationConfigValue().fusionAlgorithm;
     const enriched = attachPositioningData(req.body, telemetry);
     if (!enriched) return res.status(204).end();
-    const detection = await Detection.create(enriched);
+    const detection = await persistDetectionWithScrewFusion(enriched);
     res.status(201).json(detection);
   } catch (err) {
     res.status(500).json({ error: err.message });

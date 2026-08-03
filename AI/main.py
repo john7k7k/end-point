@@ -24,6 +24,10 @@ STREAM_END_TIMEOUT_SECONDS = 10
 simulation_config = {
     "detectionAlgorithm": "mock_yolo",
     "fusionAlgorithm": "ekf",
+    # The backend owns the persisted multi-view optimisation because it needs
+    # historical observations.  The selection is mirrored here so an AI
+    # detector/localizer can consume exactly the same configuration later.
+    "screwFusionAlgorithm": "average",
 }
 
 
@@ -33,6 +37,7 @@ class OperationUpdate(BaseModel):
 
 class SimulationConfig(BaseModel):
     fusionAlgorithm: str
+    screwFusionAlgorithm: str = "average"
 
 
 def connect_stream():
@@ -169,6 +174,7 @@ def process_stream():
                 frame,
                 detection_algorithm=config["detectionAlgorithm"],
                 fusion_algorithm=config["fusionAlgorithm"],
+                screw_fusion_algorithm=config["screwFusionAlgorithm"],
             )
             send_result(result, current_video_filenames["color"] if current_video_filenames else None)
         else:
@@ -210,6 +216,7 @@ app = FastAPI(lifespan=lifespan)
 async def receive_simulation_config(config: SimulationConfig):
     global simulation_config
     simulation_config["fusionAlgorithm"] = config.fusionAlgorithm
+    simulation_config["screwFusionAlgorithm"] = config.screwFusionAlgorithm
     return {"status": "success", **simulation_config}
 
 

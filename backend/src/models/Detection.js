@@ -21,9 +21,15 @@ const DetectionSchema = new mongoose.Schema({
   devicePosition: Vector3Schema,
   deviceOrientation: Vector3Schema,
   cameraPosition: Vector3Schema,
+  // Unfiltered camera-to-world measurement and the selected fused result are
+  // both stored to make historical algorithm comparisons reproducible.
+  rawAbsolutePosition: Vector3Schema,
   absolutePosition: Vector3Schema,
+  screwFusionPosition: Vector3Schema,
+  screwFusionAlgorithm: String,
   detectionAlgorithm: String,
-  fusionAlgorithm: String
+  fusionAlgorithm: String,
+  fusionTelemetry: mongoose.Schema.Types.Mixed
 });
 
 export default mongoose.model("Detection", DetectionSchema);
