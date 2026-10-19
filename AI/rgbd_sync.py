@@ -127,16 +127,17 @@ class PoseBuffer:
             raise ValueError('invalid pose')
         if self.samples and t <= self.samples[-1][0]:
             raise ValueError('pose timestamps must increase')
-        self.samples.append((t, p, q))
+        self.samples.append((t, p, q, {k: sample[k] for k in ('uwbRanges', 'imu', 'fusionAlgorithm') if k in sample}))
 
     def at(self, timestamp):
-        for t, p, q in self.samples:
+        for t, p, q, extra in self.samples:
             if t == timestamp:
-                return self.result(p, q, t, t)
+                return {**self.result(p, q, t, t), **extra, 'sensorTimeNs': str(t)}
         for a, b in zip(self.samples, list(self.samples)[1:]):
             if a[0] < timestamp < b[0] and b[0] - a[0] <= MAX_POSE_GAP_NS:
                 ratio = (timestamp-a[0]) / (b[0]-a[0])
-                return self.result(a[1]*(1-ratio)+b[1]*ratio, slerp(a[2], b[2], ratio), a[0], b[0])
+                return {**self.result(a[1]*(1-ratio)+b[1]*ratio, slerp(a[2], b[2], ratio), a[0], b[0]),
+                        **a[3], 'sensorTimeNs': str(a[0])}
         return None  # Never silently extrapolate stale/latest pose.
 
     @staticmethod

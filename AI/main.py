@@ -15,7 +15,9 @@ from rtsp_stream import get_dual_stream
 from sender import get_current_operation, send_result, set_current_operation
 from rgbd_api import router as rgbd_router, receiver as rgbd_receiver, recovery_worker
 
-cv2.setLogLevel(0)
+# Some OpenCV builds omit this optional logging API.
+if hasattr(cv2, "setLogLevel"):
+    cv2.setLogLevel(0)
 COLOR_RTSP_URL = "rtsp://localhost:8554/cam-color"
 DEPTH_RTSP_URL = "rtsp://localhost:8554/cam-depth"
 cap = None
@@ -23,6 +25,9 @@ current_video_filenames = None
 current_operation_id = None
 archive_recorders = []
 STREAM_END_TIMEOUT_SECONDS = 10
+STREAM_START_TIMEOUT_SECONDS = 120
+operation_started_at = None
+operation_received_frame = False
 simulation_config = {
     "detectionAlgorithm": "mock_yolo",
     "fusionAlgorithm": "ekf",
@@ -158,12 +163,15 @@ def end_active_operation(reason):
 
 def process_stream():
     global cap, current_video_filenames, simulation_config, archive_recorders
+    global operation_received_frame
     connect_stream()
     lost_count = 0
 
     while True:
         ret, frame = cap.read()
         if ret:
+            if current_operation_id:
+                operation_received_frame = True
             lost_count = 0
             if current_video_filenames and not archive_recorders:
                 archive_recorders = [
@@ -188,7 +196,7 @@ def process_stream():
                 continue
 
             stop_archive_recorders()
-            if not rgbd_receiver.connected:
+            if (not rgbd_receiver.connected and operation_received_frame):
                 end_active_operation(f"Stream disconnected for {STREAM_END_TIMEOUT_SECONDS} seconds")
 
             while True:
@@ -212,6 +220,12 @@ async def lifespan(_app: FastAPI):
     async def paired_watchdog():
         while True:
             await asyncio.sleep(1)
+            if (current_operation_id and operation_started_at is not None
+                    and not operation_received_frame and not rgbd_receiver.last_packet_at
+                    and time.monotonic() - operation_started_at > STREAM_START_TIMEOUT_SECONDS):
+                await asyncio.to_thread(end_active_operation, 'No first frame within 120 seconds')
+                if not current_operation_id:
+                    await rgbd_receiver.reset(None)
             if (rgbd_receiver.session_id and rgbd_receiver.operation_id and rgbd_receiver.last_packet_at
                     and time.monotonic() - rgbd_receiver.last_packet_at > STREAM_END_TIMEOUT_SECONDS):
                 await asyncio.to_thread(end_active_operation, 'RGB-D frame timeout (10 seconds)')
@@ -250,6 +264,9 @@ async def receive_simulation_config(config: SimulationConfig):
 @app.post("/api/operation-update")
 async def receive_operation_update(update: OperationUpdate):
     global current_video_filenames, current_operation_id, archive_recorders
+    global operation_started_at, operation_received_frame
+    operation_started_at = time.monotonic()
+    operation_received_frame = False
     set_current_operation(update.opID)
     current_operation_id = update.opID
     await rgbd_receiver.reset(update.opID)

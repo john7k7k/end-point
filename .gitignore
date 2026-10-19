@@ -5,12 +5,20 @@ AI/test/*
 !AI/test/rgbd_sender.py
 !AI/test/test_rgbd_sync.py
 !AI/test/test_rgbd_api.py
+!AI/test/test_rgbd_sensor_metadata.py
+!AI/test/test_rgbd_lifecycle.py
+!AI/test/test_rgbd_ack.py
 !AI/test/rgbd_e2e.py
 !AI/test/rgbd_transport.py
+!AI/test/paired_video.py
+!AI/test/test_rgbd_paired_video.py
 AI/**/__pycache__/
 runtime/
 # Local presentation authoring runtime cache
 .cache/
+.venv/
+.tools/
+scripts/__pycache__/
 # Reproducible screw-localisation simulation scripts and generated data/figures
 simulation/
 _ppt_work/

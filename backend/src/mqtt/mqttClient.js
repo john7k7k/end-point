@@ -1,4 +1,6 @@
 import mqtt from "mqtt";
+import { Worker } from 'node:worker_threads';
+import { backendInstanceId } from '../runtimeIdentity.js';
 import Operation from "../models/Operation.js";
 import Detection from "../models/Detection.js";
 import User from "../models/User.js";
@@ -10,7 +12,7 @@ import { getFilterState, predict, resetAllFilters, setHeading, stepVirtual, upda
 import { getWorkspaceState } from "../positioning/screwWorkspace.js";
 import { persistDetectionWithScrewFusion, rebuildScrewFusionForOperation } from "../positioning/screwFusion.js";
 
-const client = mqtt.connect("mqtt://localhost:1883");
+const client = mqtt.connect(process.env.MQTT_URL || "mqtt://localhost:1883");
 const AI_ENDPOINT = "http://localhost:8000/api/operation-update";
 let hasUwbRanges = false;
 let hasImuData = false;
@@ -51,29 +53,32 @@ export const rebuildTelemetryForOperation = async (operationId) => {
   await Promise.allSettled([...pendingRawWrites]);
   const samples = await RawSensorMeasurement.find({ operationId }).sort({ timestamp: 1 }).lean();
   if (!samples.length) return { samples: 0, telemetry: 0 };
+  // A worker owns separate filter state: replay cannot reset a new live operation.
+  const rows = await new Promise((resolve, reject) => {
+    const worker = new Worker(new URL('../positioning/telemetryReplayWorker.js', import.meta.url),
+      { workerData: samples.map(({ timestamp, source, dataSource, payload }) => ({ timestamp, source, dataSource, payload })) });
+    worker.once('message', resolve); worker.once('error', reject);
+    worker.once('exit', code => { if (code) reject(new Error(`telemetry replay exited ${code}`)); });
+  });
   await OperatorTelemetry.deleteMany({ operationId });
-  resetAllFilters(new Date(samples[0].timestamp).getTime());
-  for (const sample of samples) {
-    const time = new Date(sample.timestamp).getTime();
-    if (sample.source === "uwb") fusionAlgorithms.forEach((algorithm) => updateUwb(sample.payload.ranges || [], algorithm));
-    if (sample.source === "imu") fusionAlgorithms.forEach((algorithm) => predict(sample.payload.acceleration || {}, sample.payload.gyroscope || {}, time, algorithm));
-    if (sample.source === "simulation") {
-      fusionAlgorithms.forEach((algorithm) => {
-        predict(sample.payload.acceleration || {}, sample.payload.gyroscope || {}, time, algorithm);
-        updateUwb(sample.payload.ranges || [], algorithm);
-        if (Number.isFinite(sample.payload.heading)) setHeading(sample.payload.heading, algorithm);
-      });
-    }
-    await recordFusionTelemetrySet(operationId, time, Object.fromEntries(fusionAlgorithms.map((algorithm) => [algorithm, buildTelemetry(algorithm)])), sample.dataSource);
-  }
+  if (rows.length) await OperatorTelemetry.insertMany(rows.map(row => ({ ...row, operationId })));
   const telemetry = await OperatorTelemetry.countDocuments({ operationId });
   console.log(`Rebuilt ${telemetry} telemetry records from ${samples.length} raw samples for operation ${operationId}`);
   return { samples: samples.length, telemetry };
 };
 export const finalizeTelemetryOperation = async (operationId) => {
+  if (activeOperationId === String(operationId)) setActiveTelemetryOperation(null);
   const result = await rebuildTelemetryForOperation(operationId);
   if (activeOperationId === String(operationId)) setActiveTelemetryOperation(null);
   return result;
+};
+
+export const getSynchronizedDeviceSample = async (operationId) => {
+  if (String(operationId) !== activeOperationId) throw new Error('operation is not active');
+  const telemetry = getDeviceTelemetry();
+  await Promise.all([...pendingRawWrites]);
+  return { ...telemetry, fusionAlgorithm: activeAlgorithm(),
+    timestampNs: String(BigInt(new Date(telemetry.updatedAt).getTime()) * 1000000n) };
 };
 
 export const getDeviceTelemetry = () => {
@@ -140,6 +145,7 @@ client.on("message", async (topic, message) => {
 });
 
 async function handleOperationStart(data) {
+  if (data.backendInstanceId && data.backendInstanceId !== backendInstanceId) return;
   try {
     const { userId, startTime } = data;
 
@@ -163,8 +169,18 @@ async function handleOperationStart(data) {
 
     console.log(`Operation created: ${operation._id}`);
 
+    // Acknowledge only after AI accepts this operation; otherwise the sender
+    // can race the operation-update request and fail its RGB-D handshake.
+    const ready = await fetch(AI_ENDPOINT, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ opID: operation._id.toString() }),
+      signal: AbortSignal.timeout(15000)
+    });
+    if (!ready.ok) throw new Error(`AI operation preparation failed: ${ready.status}`);
+
     // Send acknowledgment with opID via MQTT
-    const ackPayload = { opID: operation._id.toString() };
+    const ackPayload = { opID: operation._id.toString(), backendInstanceId, requestId: data.requestId };
     client.publish(
       `vision/operation/ack/${userId}`,
       JSON.stringify(ackPayload),
@@ -175,21 +191,7 @@ async function handleOperationStart(data) {
       }
     );
 
-    // Send operationID to AI endpoint
-    try {
-      const response = await fetch(AI_ENDPOINT, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ opID: operation._id.toString() })
-      });
-      if (response.ok) {
-        console.log(`✓ Operation ID sent to AI endpoint: ${operation._id}`);
-      } else {
-        console.error(`AI endpoint returned status ${response.status}`);
-      }
-    } catch (err) {
-      console.error(`Failed to notify AI endpoint: ${err.message}`);
-    }
+    console.log(`✓ AI ready for operation: ${operation._id}`);
 
   } catch (err) {
     console.error("Error in handleOperationStart:", err);

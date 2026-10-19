@@ -19,7 +19,7 @@ from rgbd_sync import encode_packet
 from test_rgbd_sync import header
 
 
-def run(preview=False):
+def run(preview=False, paired_videos=False):
     workspace = Path(__file__).resolve().parents[2]
     with tempfile.TemporaryDirectory(prefix='rgbd-e2e-') as temp:
         env = dict(os.environ, RGBD_ARCHIVE_ROOT=str(Path(temp)))
@@ -64,9 +64,30 @@ def run(preview=False):
                 missing = requests.get(f"{base}/api/rgbd/snapshot/{h['operationId']}/{h['sessionId']}/12").json()
                 assert missing['frame']['fusion']['detections'] == []
                 assert missing['frame']['devicePose'] is not None
+                if paired_videos:
+                    from paired_video import PairedVideoReader
+                    reader = PairedVideoReader(workspace / 'AI/test/test_color.mp4', workspace / 'AI/test/test_depth.mp4')
+                    try:
+                        for fid in range(40, 43):
+                            rgb, depth, source = reader.read()
+                            timestamp = int(h['colorCaptureTimeNs']) + 100_000_000
+                            h.update(**source, frameId=fid, colorCaptureTimeNs=str(timestamp), depthCaptureTimeNs=str(timestamp))
+                            with patch.object(rgbd_api, 'run_screw_detector', return_value=None):
+                                assert receiver.process(encode_packet(h, rgb, depth))['persisted']
+                            response = requests.get(f"{base}/api/rgbd/media/{h['operationId']}/{h['sessionId']}/{fid}/depth")
+                            response.raise_for_status()
+                            shown = cv2.imdecode(np.frombuffer(response.content, np.uint8), cv2.IMREAD_GRAYSCALE)
+                            expected = np.clip(depth.astype(float) * .001 / 6 * 255, 0, 255).astype(np.uint8)
+                            assert np.mean(np.abs(shown.astype(float)-expected)) < 4
+                            saved = requests.get(f"{base}/api/rgbd/snapshot/{h['operationId']}/{h['sessionId']}/{fid}").json()
+                            assert saved['frame']['metadata']['sourceFrameIndex'] == fid-40
+                            assert np.unique(shown).size > 20
+                        print('PASS: actual color/depth MP4 tracks -> paired packet -> Mongo -> varying depth preview.', flush=True)
+                    finally:
+                        reader.close()
                 # Persist a real local journal while HTTP is unavailable, end
                 # the operation, then verify ordered recovery is still allowed.
-                h.update(frameId=40, colorCaptureTimeNs=str(int(h['colorCaptureTimeNs'])+100_000_000),
+                h.update(frameId=h['frameId']+1, colorCaptureTimeNs=str(int(h['colorCaptureTimeNs'])+100_000_000),
                          depthCaptureTimeNs=str(int(h['depthCaptureTimeNs'])+100_000_000))
                 with patch.object(rgbd_api, 'run_screw_detector', return_value=None), \
                         patch.object(rgbd_api.requests, 'post', side_effect=requests.ConnectionError('injected outage')):
@@ -78,7 +99,7 @@ def run(preview=False):
                         raise AssertionError('expected persistence failure')
                 requests.post(f'{base}/api/test/end').raise_for_status()
                 assert rgbd_api.replay_pending() == 1
-                recovered = requests.get(f"{base}/api/rgbd/snapshot/{h['operationId']}/{h['sessionId']}/40").json()
+                recovered = requests.get(f"{base}/api/rgbd/snapshot/{h['operationId']}/{h['sessionId']}/{h['frameId']}").json()
                 assert recovered['frame']['status'] == 'no_detection'
                 assert not list(Path(temp).rglob('*.pending'))
                 print('PASS: 40 stored frames, 35 matched observations, 4 fusion algorithms, RGB/depth media, no-detection pose.', flush=True)
@@ -96,4 +117,6 @@ def run(preview=False):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(); parser.add_argument('--preview', action='store_true')
-    run(parser.parse_args().preview)
+    parser.add_argument('--paired-videos', action='store_true')
+    options = parser.parse_args()
+    run(options.preview, options.paired_videos)

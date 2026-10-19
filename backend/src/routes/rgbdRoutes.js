@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import RgbdFrame from '../models/RgbdFrame.js';
 import Operation from '../models/Operation.js';
+import OperatorTelemetry from '../models/OperatorTelemetry.js';
 import { fuseFrame, publicFrame, finitePoint } from '../positioning/rgbdFusion.js';
 import { getSimulationConfigValue } from '../controllers/simulationController.js';
 
@@ -104,8 +105,26 @@ router.get('/snapshot/:operationId/:sessionId/:frameId', async (req, res) => {
   const frame = await RgbdFrame.findOne(filter).sort({ frameId: -1 }).lean();
   if (!frame) return res.sendStatus(404);
   const trail = await RgbdFrame.find({ operationId, sessionId, frameId: { $lte: frame.frameId }, devicePose: { $ne: null } })
-    .sort({ frameId: -1 }).limit(1000).select('frameId devicePose.position').lean();
-    res.json({ frame: publicFrame(frame), trail: trail.reverse().map(f => f.devicePose?.position).filter(Boolean) });
+    .sort({ frameId: -1 }).limit(1000).select('frameId devicePose').lean();
+  const operation = await Operation.findById(operationId).select('endTime').lean();
+  const timestamp = new Date(Number(BigInt(frame.captureTimeNs) / 1000000n));
+  const algorithms = ['ekf', 'complementary', 'weighted_average'];
+  const deviceAlgorithms = {};
+  if (operation?.endTime) {
+    await Promise.all(algorithms.map(async algorithm => {
+      const rows = await OperatorTelemetry.find({ operationId, fusionAlgorithm: algorithm, timestamp: { $lte: timestamp } })
+        .sort({ timestamp: -1 }).limit(1000).lean();
+      // A missing/stale pose must not be presented as matching this image.
+      const newest = rows[0];
+      deviceAlgorithms[algorithm] = { trail: rows.reverse().map(r => r.telemetry.position),
+        telemetry: newest && timestamp - new Date(newest.timestamp) <= 250 ? newest.telemetry : null };
+    }));
+  } else if (frame.devicePose?.fusionAlgorithm) {
+    const algorithm = frame.devicePose.fusionAlgorithm;
+    deviceAlgorithms[algorithm] = { telemetry: frame.devicePose,
+      trail: [...trail].reverse().filter(r => r.devicePose?.fusionAlgorithm === algorithm).map(r => r.devicePose.position) };
+  }
+  res.json({ frame: publicFrame(frame), trail: trail.reverse().map(f => f.devicePose?.position).filter(Boolean), deviceAlgorithms });
 });
 
 router.get('/media/:operationId/:sessionId/:frameId/:kind', async (req, res) => {

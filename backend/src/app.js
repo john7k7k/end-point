@@ -51,4 +51,4 @@ if (existsSync(frontendDistPath)) {
 
 await connectDB();
 
-app.listen(3000, () => console.log("Server running on port 3000"));
+app.listen(3000, process.env.APP_HOST || '0.0.0.0', () => console.log("Server running on port 3000"));

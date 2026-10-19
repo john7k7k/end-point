@@ -6,6 +6,10 @@ import api from '../api';
 import RgbdViewer from '../components/RgbdViewer.vue';
 
 const pairedSessions = ref([]);
+const pairedSessionId = ref('');
+watch(pairedSessions, rows => {
+  if (!rows.some(s => s._id === pairedSessionId.value)) pairedSessionId.value = rows[0]?._id || '';
+});
 let pollBusy = false;
 const refreshPairedSessions = async () => {
   const op = selectedOperationId.value;
@@ -75,7 +79,7 @@ const hasStoredDetection = computed(() => sourceMode.value === 'live' ? detectio
 const hasVisibleMedia = computed(() => sourceMode.value === 'live' ? Boolean(activeOperation.value) : Boolean(selectedVideo.value));
 const showDetectionOverlay = computed(() => showDetections.value && !livePaused.value && hasVisibleMedia.value && Boolean(activeDetection.value) && (hasStoredDetection.value || virtualDetectionVisible.value));
 const displayName = computed(() => !activeDetection.value ? '未偵測到螺絲' : ['example_object', 'screw_simulated'].includes(activeDetection.value.objectClass) ? '螺絲' : activeDetection.value.objectClass);
-const liveStreamUrl = computed(() => `http://localhost:8889/${viewMode.value === 'depth' ? 'cam-depth' : 'cam-color'}`);
+const liveStreamUrl = computed(() => `${(import.meta.env.VITE_WEBRTC_BASE_URL || `${window.location.protocol}//${window.location.hostname}:8889`).replace(/\/$/, '')}/${viewMode.value === 'depth' ? 'cam-depth' : 'cam-color'}`);
 const cubeStyle = computed(() => {
   const o = positioning.value?.telemetry.orientation || { roll: 0, pitch: 0, yaw: 0 };
   return { transform: `rotateX(${o.roll}deg) rotateY(${o.pitch}deg) rotateZ(${o.yaw}deg)` };
@@ -268,11 +272,11 @@ onUnmounted(() => { window.clearInterval(positionTimer); disposeThreeScene(); })
     <div class="media-controls">
       <div class="segmented-control"><button :class="{ active: sourceMode === 'history' }" type="button" @click="sourceMode = 'history'">歷史影片</button><button :class="{ active: sourceMode === 'live' }" type="button" @click="sourceMode = 'live'">目前串流</button></div>
       <p v-if="sourceMode === 'live'" class="stream-start-time">開始時間：{{ liveStartTime }}</p>
-      <template v-else><label>作業<select v-model="selectedOperationId" :disabled="!historyOperations.length"><option v-if="!historyOperations.length" value="">無歷史紀錄</option><option v-else value="" disabled>選擇歷史作業</option><option v-for="op in historyOperations" :key="op._id" :value="op._id">{{ new Date(op.startTime).toLocaleString('zh-TW') }}</option></select></label><label v-if="!pairedSessions.length" class="video-select-control">影片<select v-model="selectedVideoName" :disabled="!modeVideos.length"><option v-if="!modeVideos.length" value="">無歷史紀錄</option><option v-for="video in modeVideos" :key="video.filename" :value="video.filename">{{ video.filename }}</option></select></label></template>
+      <template v-else><label>作業<select v-model="selectedOperationId" :disabled="!historyOperations.length"><option v-if="!historyOperations.length" value="">無歷史紀錄</option><option v-else value="" disabled>選擇歷史作業</option><option v-for="op in historyOperations" :key="op._id" :value="op._id">{{ new Date(op.startTime).toLocaleString('zh-TW') }}</option></select></label><label v-if="!pairedSessions.length" class="video-select-control">影片<select v-model="selectedVideoName" :disabled="!modeVideos.length"><option v-if="!modeVideos.length" value="">無歷史紀錄</option><option v-for="video in modeVideos" :key="video.filename" :value="video.filename">{{ video.filename }}</option></select></label><label v-else class="video-select-control">影片<select v-model="pairedSessionId"><option v-for="(s, i) in pairedSessions" :key="s._id" :value="s._id">{{ viewMode === 'depth' ? '深度影像' : '光學影像' }} · {{ i + 1 }}（{{ s.count }} 幀）</option></select></label></template>
       <label class="switch-control"><input v-model="showDetections" type="checkbox" /> 顯示螺絲偵測</label>
       <div class="segmented-control"><button :class="{ active: viewMode === 'color' }" type="button" @click="viewMode = 'color'">光學影像</button><button :class="{ active: viewMode === 'depth' }" type="button" @click="viewMode = 'depth'">深度影像</button></div>
     </div>
-    <RgbdViewer v-if="pairedSessions.length" :key="`${sourceMode}-${selectedOperationId}`" :operation-id="selectedOperationId" :mode="sourceMode" :view="viewMode" :sessions="pairedSessions" :show-detections="showDetections" />
+    <RgbdViewer v-if="pairedSessions.length" :key="`${sourceMode}-${selectedOperationId}`" :operation-id="selectedOperationId" :mode="sourceMode" :view="viewMode" :sessions="pairedSessions" :selected-session="pairedSessionId" :show-detections="showDetections" />
     <template v-else>
     <p v-if="loading" class="placeholder">正在讀取資料…</p>
     <div v-else class="stream-workspace">

@@ -1,21 +1,19 @@
-"""Synthetic RGB-D publisher; does NOT treat a grayscale video as metric depth."""
+"""Paired RGB/depth-video demo publisher with explicitly labelled pseudo-depth."""
 import argparse
 import asyncio
 import json
-import math
 import sys
 import time
 import uuid
 import threading
 from pathlib import Path
 
-import cv2
-import numpy as np
-import websockets
+import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from rgbd_sync import encode_packet
 from rgbd_transport import PairedPublisher
+from paired_video import PairedVideoReader
 
 
 async def run(args):
@@ -25,33 +23,32 @@ async def run(args):
     session = str(uuid.uuid4())
     clock = 'simulation-host-unix-ns'
     base = dict(operationId=args.operation_id, sessionId=session, clockId=clock)
-    cap = cv2.VideoCapture(str(args.color))
-    if not cap.isOpened():
-        raise ValueError(f'Cannot open {args.color}')
-    start = time.time_ns()
+    reader = PairedVideoReader(args.color, args.depth)
     transport = PairedPublisher(args.url, base)
     try:
-        print(f'RGB-D session {session}; all depth/pose data are synthetic', flush=True)
+        print(f'RGB-D session {session}; paired color/depth video, demo depth (gray 0..255 -> 0..6 m)', flush=True)
+        print(f'Paired common segment: {reader.length} frames at source {reader.fps:g} FPS; '
+              f'color={reader.color_count}, depth={reader.depth_count}; both tracks rewind together.', flush=True)
         index = 0
         while not stop.is_set() and (args.frames == 0 or index < args.frames):
             tick = time.monotonic()
-            ok, color = cap.read()
-            if not ok:
-                cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                ok, color = cap.read()
-                if not ok:
-                    raise ValueError('empty test video')
-            color = cv2.resize(color, (640, 360))
-            timestamp = time.time_ns()
-            seconds = (timestamp-start)/1e9
-            depth = np.full(color.shape[:2], int(1500+100*math.sin(seconds)), np.uint16)
+            color, depth, source = await asyncio.to_thread(reader.read)
+            # Reuse the backend's raw UWB/IMU -> selected filter pipeline.
+            # This is a simulated capture at that sample time, not hardware timing.
+            response = await asyncio.to_thread(requests.get,
+                f'{args.backend}/api/device/pose/{args.operation_id}', timeout=5)
+            response.raise_for_status()
+            telemetry = response.json()
+            timestamp = int(telemetry['timestampNs'])
             pose = dict(base, type='pose', timestampNs=str(timestamp),
-                        position={'x': 10+2*math.sin(seconds/5), 'y': 6+math.cos(seconds/5), 'z': 1.5},
-                        quaternion={'w': math.cos(seconds/20), 'x': 0, 'y': 0, 'z': math.sin(seconds/20)})
+                        position=telemetry['position'], quaternion=telemetry['quaternion'],
+                        uwbRanges=telemetry.get('uwbRanges', []), imu=telemetry.get('imu'),
+                        fusionAlgorithm=telemetry['fusionAlgorithm'])
             h = dict(base, frameId=index, colorCaptureTimeNs=str(timestamp),
                      depthCaptureTimeNs=str(timestamp + (50_000_000 if args.skew_every and index % args.skew_every == 0 else 0)),
                      calibrationId='default', depthScaleMeters=.001, depthAlignedToColor=True,
-                     dataSource='simulation', intrinsics={'fx': 465., 'fy': 465., 'cx': 320., 'cy': 180.})
+                     dataSource='simulation', intrinsics={'fx': 465., 'fy': 465., 'cx': 320., 'cy': 180.},
+                     **source)
             packet = encode_packet(h, color, depth)
             if not args.drop_every or index % args.drop_every:
                 reply = await transport.frame(index, pose, packet)
@@ -64,14 +61,16 @@ async def run(args):
         print(await transport.end(), flush=True)
     finally:
         await transport.close()
-        cap.release()
+        reader.close()
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--operation-id', required=True)
+    parser.add_argument('--backend', default='http://127.0.0.1:3000')
     parser.add_argument('--url', default='ws://127.0.0.1:8000/ws/rgbd')
     parser.add_argument('--color', type=Path, default=Path(__file__).with_name('test_color.mp4'))
+    parser.add_argument('--depth', type=Path, default=Path(__file__).with_name('test_depth.mp4'))
     parser.add_argument('--fps', type=float, default=10)
     parser.add_argument('--frames', type=int, default=0, help='0 = loop until stopped')
     parser.add_argument('--drop-every', type=int, default=0)
