@@ -1,4 +1,5 @@
 import cv2
+import asyncio
 import subprocess
 import threading
 import time
@@ -12,6 +13,7 @@ from pydantic import BaseModel
 from detector import detect
 from rtsp_stream import get_dual_stream
 from sender import get_current_operation, send_result, set_current_operation
+from rgbd_api import router as rgbd_router, receiver as rgbd_receiver, recovery_worker
 
 cv2.setLogLevel(0)
 COLOR_RTSP_URL = "rtsp://localhost:8554/cam-color"
@@ -176,7 +178,9 @@ def process_stream():
                 fusion_algorithm=config["fusionAlgorithm"],
                 screw_fusion_algorithm=config["screwFusionAlgorithm"],
             )
-            send_result(result, current_video_filenames["color"] if current_video_filenames else None)
+            # Paired mode owns localization. RTSP remains preview/archive only.
+            if not rgbd_receiver.session_id:
+                send_result(result, current_video_filenames["color"] if current_video_filenames else None)
         else:
             lost_count += 1
             if lost_count < STREAM_END_TIMEOUT_SECONDS * 10:
@@ -184,7 +188,8 @@ def process_stream():
                 continue
 
             stop_archive_recorders()
-            end_active_operation(f"Stream disconnected for {STREAM_END_TIMEOUT_SECONDS} seconds")
+            if not rgbd_receiver.connected:
+                end_active_operation(f"Stream disconnected for {STREAM_END_TIMEOUT_SECONDS} seconds")
 
             while True:
                 try:
@@ -204,12 +209,34 @@ async def lifespan(_app: FastAPI):
         print("No active operation found; waiting for an operation update.")
     thread = threading.Thread(target=process_stream, daemon=True)
     thread.start()
+    async def paired_watchdog():
+        while True:
+            await asyncio.sleep(1)
+            if (rgbd_receiver.session_id and rgbd_receiver.operation_id and rgbd_receiver.last_packet_at
+                    and time.monotonic() - rgbd_receiver.last_packet_at > STREAM_END_TIMEOUT_SECONDS):
+                await asyncio.to_thread(end_active_operation, 'RGB-D frame timeout (10 seconds)')
+                if not current_operation_id:
+                    await rgbd_receiver.reset(None)
+    watchdog = asyncio.create_task(paired_watchdog())
+    recovery = asyncio.create_task(recovery_worker())
     yield
+    recovery.cancel()
+    try:
+        await recovery
+    except asyncio.CancelledError:
+        pass
+    watchdog.cancel()
+    try:
+        await watchdog
+    except asyncio.CancelledError:
+        pass
     if cap:
         cap.release()
 
 
 app = FastAPI(lifespan=lifespan)
+app.include_router(rgbd_router)
+rgbd_receiver.config = lambda: simulation_config.copy()
 
 
 @app.post("/api/simulation-config")
@@ -225,6 +252,7 @@ async def receive_operation_update(update: OperationUpdate):
     global current_video_filenames, current_operation_id, archive_recorders
     set_current_operation(update.opID)
     current_operation_id = update.opID
+    await rgbd_receiver.reset(update.opID)
     stop_archive_recorders()
     timestamp = int(time.time())
     current_video_filenames = {
@@ -241,10 +269,11 @@ async def receive_operation_end():
     stop_archive_recorders()
     set_current_operation(None)
     current_operation_id = None
+    await rgbd_receiver.reset(None)
     current_video_filenames = None
     return {"status": "success"}
 
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    uvicorn.run(app, host="127.0.0.1", port=8000, ws_max_size=16 * 1024 * 1024, ws_max_queue=2)

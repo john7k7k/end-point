@@ -101,6 +101,7 @@ client.on("connect", () => {
   client.subscribe("vision/detection", { qos: 2 });
   client.subscribe("vision/uwb/ranges", { qos: 1 });
   client.subscribe("vision/imu/data", { qos: 1 });
+  client.subscribe("vision/device/pose", { qos: 1 });
   console.log("MQTT subscribed to vision/operation/start, vision/operation/end, and vision/detection");
 });
 
@@ -109,7 +110,14 @@ client.on("message", async (topic, message) => {
   try {
     const data = JSON.parse(message.toString());
     console.log(`📨 Received MQTT message on ${topic}:`, data);
-    if (topic === "vision/operation/start") {
+    if (topic === "vision/device/pose") {
+      if (String(data.operationId) !== activeOperationId) throw new Error('pose operation mismatch');
+      const response = await fetch('http://127.0.0.1:8000/api/rgbd/pose', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data), signal: AbortSignal.timeout(2000)
+      });
+      if (!response.ok) console.error('RGB-D pose rejected:', await response.text());
+    } else if (topic === "vision/operation/start") {
       await handleOperationStart(data);
     } else if (topic === "vision/operation/end") {
       await handleOperationEnd(data);

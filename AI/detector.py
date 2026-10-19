@@ -70,8 +70,8 @@ def identify_object(color_frame):
     center_y = random.randint(0, color_frame.shape[0]-1)
 
     # 模拟 bbox: 以中心点为基准，生成一个 200x150 的边界框
-    bbox_width = 200
-    bbox_height = 150
+    bbox_width = min(200, color_frame.shape[1])
+    bbox_height = min(150, color_frame.shape[0])
     bbox_x = max(0, center_x - bbox_width // 2)
     bbox_y = max(0, center_y - bbox_height // 2)
 

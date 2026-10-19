@@ -3,6 +3,16 @@ import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import api from '../api';
+import RgbdViewer from '../components/RgbdViewer.vue';
+
+const pairedSessions = ref([]);
+let pollBusy = false;
+const refreshPairedSessions = async () => {
+  const op = selectedOperationId.value;
+  const rows = op ? (await api.get(`/rgbd/sessions/${op}`)).data : [];
+  if (op === selectedOperationId.value) pairedSessions.value = rows;
+  return rows.length > 0;
+};
 
 const operations = ref([]), videos = ref([]), detections = ref([]), telemetryRecords = ref([]);
 const sourceMode = ref('history'), selectedOperationId = ref(''), selectedVideoName = ref('');
@@ -158,6 +168,7 @@ const loadHistory = async () => {
   videos.value = []; detections.value = []; telemetryRecords.value = []; selectedVideoName.value = ''; currentTime.value = 0;
   if (!selectedOperationId.value) return;
   try {
+    if (await refreshPairedSessions()) return;
     const [videoRes, detectionRes, telemetryRes] = await Promise.all([api.get(`/videos/${selectedOperationId.value}`), api.get(`/detections/${selectedOperationId.value}`), api.get(`/operator-telemetry/${selectedOperationId.value}`)]);
     videos.value = videoRes.data;
     detections.value = detectionRes.data.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
@@ -168,6 +179,7 @@ const loadHistory = async () => {
 };
 const refreshOperations = async () => { operations.value = (await api.get('/operations')).data; };
 const refreshPositioning = async () => {
+  if (pairedSessions.value.length) return;
   if (!selectedOperationId.value) return;
   try {
     const params = { source: sourceMode.value, algorithm: fusionAlgorithm.value, screwAlgorithm: screwFusionAlgorithm.value };
@@ -212,7 +224,7 @@ const updatePlaybackAndSync = async (event) => { updatePlayback(event); await sy
 const seek = async (event) => { if (videoPlayer.value) { videoPlayer.value.currentTime = Number(event.target.value); currentTime.value = Number(event.target.value); if (sourceMode.value === 'history') await refreshPositioning(); } };
 const toggleLiveDisplay = async () => { livePaused.value = !livePaused.value; if (!livePaused.value) { liveFrameKey.value += 1; await refreshLiveDetections(); await refreshPositioning(); } };
 
-watch(selectedOperationId, () => { positionTrail.value = []; lastHistoryPositionSecond = -1; if (sourceMode.value === 'history') loadHistory(); else refreshPositioning(); });
+watch(selectedOperationId, async () => { pairedSessions.value = []; positionTrail.value = []; lastHistoryPositionSecond = -1; if (sourceMode.value === 'history') loadHistory(); else if (!await refreshPairedSessions()) refreshPositioning(); });
 watch(viewMode, () => { selectedVideoName.value = modeVideos.value[0]?.filename || ''; currentTime.value = 0; });
 watch(fusionAlgorithm, () => { if (sourceMode.value === 'live') { liveTrail.value = []; Object.keys(trailVisibility).forEach((algorithm) => { trailVisibility[algorithm] = algorithm === fusionAlgorithm.value; }); } });
 watch(sourceMode, async () => {
@@ -232,7 +244,18 @@ onMounted(async () => {
     const [ops, config] = await Promise.all([api.get('/operations'), api.get('/simulation/config')]);
     operations.value = ops.data; fusionAlgorithm.value = config.data.fusionAlgorithm; screwFusionAlgorithm.value = config.data.screwFusionAlgorithm || 'average';
     selectedOperationId.value = historyOperations.value[0]?._id || '';
-    positionTimer = window.setInterval(async () => { if (sourceMode.value === 'live' && !livePaused.value) { simulationTick.value += 1; await refreshLiveDetections(); await refreshPositioning(); } }, 200);
+    positionTimer = window.setInterval(async () => {
+      if (pollBusy || sourceMode.value !== 'live') return;
+      pollBusy = true;
+      try {
+        await refreshOperations();
+        const op = activeOperation.value?._id || '';
+        if (op !== selectedOperationId.value) selectedOperationId.value = op;
+        if (await refreshPairedSessions()) return;
+        if (!livePaused.value) { simulationTick.value += 1; await refreshLiveDetections(); await refreshPositioning(); }
+      } catch { /* Retry discovery on next tick. */ }
+      finally { pollBusy = false; }
+    }, 500);
   } catch { error.value = '無法讀取系統資料。'; }
   finally { loading.value = false; }
 });
@@ -245,10 +268,12 @@ onUnmounted(() => { window.clearInterval(positionTimer); disposeThreeScene(); })
     <div class="media-controls">
       <div class="segmented-control"><button :class="{ active: sourceMode === 'history' }" type="button" @click="sourceMode = 'history'">歷史影片</button><button :class="{ active: sourceMode === 'live' }" type="button" @click="sourceMode = 'live'">目前串流</button></div>
       <p v-if="sourceMode === 'live'" class="stream-start-time">開始時間：{{ liveStartTime }}</p>
-      <template v-else><label>作業<select v-model="selectedOperationId" :disabled="!historyOperations.length"><option v-if="!historyOperations.length" value="">無歷史紀錄</option><option v-else value="" disabled>選擇歷史作業</option><option v-for="op in historyOperations" :key="op._id" :value="op._id">{{ new Date(op.startTime).toLocaleString('zh-TW') }}</option></select></label><label class="video-select-control">影片<select v-model="selectedVideoName" :disabled="!modeVideos.length"><option v-if="!modeVideos.length" value="">無歷史紀錄</option><option v-for="video in modeVideos" :key="video.filename" :value="video.filename">{{ video.filename }}</option></select></label></template>
+      <template v-else><label>作業<select v-model="selectedOperationId" :disabled="!historyOperations.length"><option v-if="!historyOperations.length" value="">無歷史紀錄</option><option v-else value="" disabled>選擇歷史作業</option><option v-for="op in historyOperations" :key="op._id" :value="op._id">{{ new Date(op.startTime).toLocaleString('zh-TW') }}</option></select></label><label v-if="!pairedSessions.length" class="video-select-control">影片<select v-model="selectedVideoName" :disabled="!modeVideos.length"><option v-if="!modeVideos.length" value="">無歷史紀錄</option><option v-for="video in modeVideos" :key="video.filename" :value="video.filename">{{ video.filename }}</option></select></label></template>
       <label class="switch-control"><input v-model="showDetections" type="checkbox" /> 顯示螺絲偵測</label>
       <div class="segmented-control"><button :class="{ active: viewMode === 'color' }" type="button" @click="viewMode = 'color'">光學影像</button><button :class="{ active: viewMode === 'depth' }" type="button" @click="viewMode = 'depth'">深度影像</button></div>
     </div>
+    <RgbdViewer v-if="pairedSessions.length" :key="`${sourceMode}-${selectedOperationId}`" :operation-id="selectedOperationId" :mode="sourceMode" :view="viewMode" :sessions="pairedSessions" :show-detections="showDetections" />
+    <template v-else>
     <p v-if="loading" class="placeholder">正在讀取資料…</p>
     <div v-else class="stream-workspace">
       <div class="stream-main">
@@ -261,13 +286,14 @@ onUnmounted(() => { window.clearInterval(positionTimer); disposeThreeScene(); })
         <p v-else class="placeholder">此作業尚未找到歷史影片。</p>
       </div>
       <aside class="stream-sidebar">
-        <section v-if="positioning" class="side-section screw-position-card"><h3>螺絲定位</h3><label class="screw-fusion-control">螺絲定位融合演算法<select v-model="screwFusionAlgorithm" :disabled="saving" @change="saveScrewFusion"><option value="average">平均法（多幀座標平均）</option><option value="ekf">EKF（靜態位置濾波）</option><option value="es_ekf">ESKF（誤差狀態濾波）</option><option value="rmv_fgo">RMV-FGO（魯棒多視角因子圖）</option></select></label><template v-if="positioning.detection"><p>{{ displayName }}　深度 {{ activeDetection?.depth }}</p><p>模型：{{ positioning.detection.detectionAlgorithm }}<br>設備 UWB + IMU：{{ positioning.fusionAlgorithm }}</p><p>相機／設備座標：{{ format(positioning.cameraPosition.x) }}, {{ format(positioning.cameraPosition.y) }}, {{ format(positioning.cameraPosition.z) }} m</p><p>螺絲相機座標：{{ format(positioning.screwCameraPosition?.x) }}, {{ format(positioning.screwCameraPosition?.y) }}, {{ format(positioning.screwCameraPosition?.z) }} m</p><p>原始絕對座標：{{ format(positioning.rawAbsolutePosition?.x) }}, {{ format(positioning.rawAbsolutePosition?.y) }}, {{ format(positioning.rawAbsolutePosition?.z) }} m</p><p class="absolute-position">{{ positioning.screwFusionLabel || '螺絲融合' }}結果：{{ format(positioning.absolutePosition?.x) }}, {{ format(positioning.absolutePosition?.y) }}, {{ format(positioning.absolutePosition?.z) }} m</p><small v-if="positioning.screwLocalization">觀測 {{ positioning.screwLocalization.observationCount }} 幀｜創新量 {{ format(positioning.screwLocalization.innovation) }} m｜1σ {{ format(positioning.screwLocalization.uncertainty?.x) }}, {{ format(positioning.screwLocalization.uncertainty?.y) }}, {{ format(positioning.screwLocalization.uncertainty?.z) }} m</small><small v-else></small></template><p v-else class="no-screw-localization">尚未偵測到螺絲；選擇的演算法會在下一筆螺絲觀測到達後套用。</p></section>
+        <section v-if="positioning" class="side-section screw-position-card"><h3>螺絲定位</h3><label class="screw-fusion-control">螺絲定位融合演算法<select v-model="screwFusionAlgorithm" :disabled="saving" @change="saveScrewFusion"><option value="average">平均法（多幀座標平均）</option><option value="ekf">EKF（靜態位置濾波）</option><option value="es_ekf">ESKF（誤差狀態濾波）</option><option value="rmv_fgo">RMV-FGO（強健多視角因子圖）</option></select></label><template v-if="positioning.detection"><p>{{ displayName }}　深度 {{ activeDetection?.depth }}</p><p>模型：{{ positioning.detection.detectionAlgorithm }}<br>設備 UWB + IMU：{{ positioning.fusionAlgorithm }}</p><p>相機／設備座標：{{ format(positioning.cameraPosition.x) }}, {{ format(positioning.cameraPosition.y) }}, {{ format(positioning.cameraPosition.z) }} m</p><p>螺絲相機座標：{{ format(positioning.screwCameraPosition?.x) }}, {{ format(positioning.screwCameraPosition?.y) }}, {{ format(positioning.screwCameraPosition?.z) }} m</p><p>原始絕對座標：{{ format(positioning.rawAbsolutePosition?.x) }}, {{ format(positioning.rawAbsolutePosition?.y) }}, {{ format(positioning.rawAbsolutePosition?.z) }} m</p><p class="absolute-position">{{ positioning.screwFusionLabel || '螺絲融合' }}結果：{{ format(positioning.absolutePosition?.x) }}, {{ format(positioning.absolutePosition?.y) }}, {{ format(positioning.absolutePosition?.z) }} m</p><small v-if="positioning.screwLocalization">觀測 {{ positioning.screwLocalization.observationCount }} 幀｜創新量 {{ format(positioning.screwLocalization.innovation) }} m｜1σ {{ format(positioning.screwLocalization.uncertainty?.x) }}, {{ format(positioning.screwLocalization.uncertainty?.y) }}, {{ format(positioning.screwLocalization.uncertainty?.z) }} m</small><small v-else></small></template><p v-else class="no-screw-localization">尚未偵測到螺絲；選擇的演算法會在下一筆螺絲觀測到達後套用。</p></section>
       </aside>
     </div>
     <section v-if="positioning" class="telemetry-dashboard">
       <div class="position-scene-card"><div class="scene-heading"><div><h3>操作空間建模</h3></div><span>拖曳可旋轉、滾輪可縮放；停留於圖示可查看座標</span></div><p class="nearby-screw-alert" :class="{ inactive: !positioning.workspace?.notification }">{{ positioning.workspace?.notification ? `提示：${positioning.workspace.notification}` : '附近目前沒有螺絲。' }}</p><div ref="sceneContainer" class="three-scene"><div ref="sceneTooltip" class="three-tooltip"></div></div><div class="scene-legend"><span><i class="legend-anchor"></i>基地站</span><span><i class="legend-device"></i>設備／攝影機光錐</span><span><i class="legend-screw"></i>M4（藍）／M6（紫）；金色為可辨識</span></div></div>
       <aside class="fusion-data-card"><h3>UWB + IMU 融合資料</h3><div class="current-position"><strong>融合輸出設備位置</strong><span>X {{ format(positioning.telemetry.position.x) }}　Y {{ format(positioning.telemetry.position.y) }}　Z {{ format(positioning.telemetry.position.z) }} m</span></div><div class="sensor-columns"><div><h4>UWB：8 個基地站距離（m）</h4><div class="uwb-range-grid"><span v-for="range in (positioning.telemetry.uwbRanges || [])" :key="range.stationId">站 {{ range.stationId + 1 }}：{{ format(range.distance) }}</span></div></div><div class="imu-readout"><h4>IMU 即時量測</h4><p>加速度：{{ format(positioning.telemetry.imu?.acceleration?.x) }}, {{ format(positioning.telemetry.imu?.acceleration?.y) }}, {{ format(positioning.telemetry.imu?.acceleration?.z) }} m/s²</p><p>角速度：{{ format(positioning.telemetry.imu?.gyroscope?.x) }}, {{ format(positioning.telemetry.imu?.gyroscope?.y) }}, {{ format(positioning.telemetry.imu?.gyroscope?.z) }} °/s</p><p>姿態：Roll {{ format(positioning.telemetry.orientation.roll) }}°、Pitch {{ format(positioning.telemetry.orientation.pitch) }}°、Yaw {{ format(positioning.telemetry.orientation.yaw) }}°</p></div></div><label v-if="sourceMode === 'live'">UWB + IMU 融合演算法<select v-model="fusionAlgorithm" @change="saveFusion"><option value="ekf">Error-State Extended Kalman Filter (ES-EKF)</option><option value="complementary">Complementary Filter</option><option value="weighted_average">Weighted Average</option></select></label><div v-else class="path-algorithm-menu"><strong>演算法路徑</strong><label class="trail-toggle trail-ekf"><input v-model="trailVisibility.ekf" type="checkbox" @change="updateThreeScene" /><span>ES-EKF</span></label><label class="trail-toggle trail-complementary"><input v-model="trailVisibility.complementary" type="checkbox" @change="updateThreeScene" /><span>互補濾波</span></label><label class="trail-toggle trail-weighted"><input v-model="trailVisibility.weighted_average" type="checkbox" @change="updateThreeScene" /><span>加權平均</span></label></div><RouterLink class="calibration-link" to="/settings/camera-extrinsics">設定 RGB-D 相機外參 →</RouterLink></aside>
     </section>
+    </template>
     <p v-if="message" class="success">{{ message }}</p><p v-if="error" class="alert">{{ error }}</p>
   </section>
 </template>

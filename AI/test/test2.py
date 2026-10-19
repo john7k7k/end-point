@@ -18,6 +18,8 @@ TOPIC_ACK = f"vision/operation/ack/{USER_ID}"
 
 color_process = None
 depth_process = None
+rgbd_process = None
+RGBD_ENABLED = '--rgbd' in sys.argv
 active_operation_id = None
 
 
@@ -29,7 +31,7 @@ def stream_command(video_path, destination):
 
 
 def start_streams():
-    global color_process, depth_process
+    global color_process, depth_process, rgbd_process
     if color_process or depth_process:
         return
     color_process = subprocess.Popen(
@@ -41,18 +43,30 @@ def start_streams():
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
     print("Started cam-color and cam-depth streams")
+    if RGBD_ENABLED:
+        rgbd_process = subprocess.Popen([
+            sys.executable, str(BASE_DIR / 'rgbd_sender.py'), '--operation-id', active_operation_id, '--controlled'
+        ], stdin=subprocess.PIPE)
 
 
 def stop_streams():
-    global color_process, depth_process
-    for process in (color_process, depth_process):
-        if process:
+    global color_process, depth_process, rgbd_process
+    if rgbd_process and rgbd_process.poll() is None:
+        try:
+            rgbd_process.stdin.write(b'q\n')
+            rgbd_process.stdin.flush()
+            rgbd_process.wait(timeout=10)
+        except (BrokenPipeError, OSError, subprocess.TimeoutExpired):
+            pass
+    for process in (rgbd_process, color_process, depth_process):
+        if process and process.poll() is None:
             process.terminate()
             try:
                 process.wait(timeout=3)
             except subprocess.TimeoutExpired:
                 process.kill()
     color_process = depth_process = None
+    rgbd_process = None
     print("Stopped streams")
 
 
@@ -101,9 +115,10 @@ if __name__ == "__main__":
             if command == "s":
                 client.publish(TOPIC_START, json.dumps({"userId": USER_ID}), qos=2)
             elif command == "e":
-                publish_end(client, "Stopped from test2")
                 stop_streams()
+                publish_end(client, "Stopped from test2")
             elif command == "q":
+                stop_streams()
                 publish_end(client, "test2 exited")
                 break
     finally:

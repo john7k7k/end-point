@@ -1,0 +1,62 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import express from 'express';
+import mongoose from 'mongoose';
+import router from '../src/routes/rgbdRoutes.js';
+import RgbdFrame from '../src/models/RgbdFrame.js';
+import Operation from '../src/models/Operation.js';
+
+test('RGB-D storage: idempotency, history, validation, ended-operation rejection',
+  { skip: !process.env.RGBD_TEST_MONGO }, async () => {
+    const uri = process.env.RGBD_TEST_MONGO;
+    assert.match(uri, /\/vision_rgbd_sync_test$/); // Never point tests at production.
+    await mongoose.connect(uri);
+    const op = await Operation.create({ userId: new mongoose.Types.ObjectId(), startTime: new Date() });
+    await RgbdFrame.init();
+    const app = express();
+    app.use(express.json());
+    app.use('/api/rgbd', router);
+    const server = app.listen(0, '127.0.0.1');
+    await new Promise(resolve => server.once('listening', resolve));
+    const base = `http://127.0.0.1:${server.address().port}/api/rgbd`;
+    const row = { operationId: String(op._id), sessionId: '00000000-0000-4000-8000-000000000000',
+      frameId: 0, captureTimeNs: '1000000000', receivedTimeNs: '1000000001',
+      processedTimeNs: '1000000002', status: 'pose_unavailable', metadata: {}, result: null };
+    const post = data => fetch(`${base}/frames`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
+    try {
+      assert.equal((await post(row)).status, 201);
+      assert.equal((await post(row)).status, 201);
+      assert.equal(await RgbdFrame.countDocuments({ operationId: op._id }), 1);
+      assert.equal((await (await fetch(`${base}/frames/${op._id}`)).json()).length, 1);
+      assert.equal((await post({ ...row, frameId: -1 })).status, 400);
+      assert.equal((await post({ ...row, captureTimeNs: 1000000000 })).status, 400);
+      const pose = { position: { x: .1, y: 1.2, z: 1.1 }, quaternion: { w: 1, x: 0, y: 0, z: 0 } };
+      const localized = { ...row, frameId: 1, captureTimeNs: '1100000000', status: 'localized', devicePose: pose,
+        result: { observations: [{ object: 'M4 hex screw', cameraPosition: { x: 0, y: 0, z: 1.2 }, rawAbsolutePosition: { x: 1.3, y: 1.2, z: 1.1 } }] } };
+      assert.equal((await post(localized)).status, 201);
+      assert.equal((await post(localized)).status, 201);
+      let snapshot = await (await fetch(`${base}/snapshot/${op._id}/${row.sessionId}/latest`)).json();
+      assert.equal(snapshot.frame.fusion.detections[0].screwId, 'A-1');
+      assert.equal(snapshot.frame.fusion.state['A-1'].observationCount, 1, 'retry cannot double-fuse');
+      assert.equal(snapshot.frame.videoTimeMs, 100);
+      assert.deepEqual(snapshot.trail, [pose.position]);
+      assert.equal((await post({ ...row, frameId: 2, captureTimeNs: '1200000000', status: 'no_detection', devicePose: pose })).status, 201);
+      snapshot = await (await fetch(`${base}/snapshot/${op._id}/${row.sessionId}/latest`)).json();
+      assert.equal(snapshot.trail.length, 2, 'device keeps moving without a detection');
+      assert.equal(snapshot.frame.fusion.detections.length, 0);
+      assert.equal(snapshot.frame.fusion.state['A-1'].observationCount, 1);
+      assert.equal((await post({ ...row, frameId: 3, captureTimeNs: '1000000000' })).status, 409);
+      const sessions = await (await fetch(`${base}/sessions/${op._id}`)).json();
+      assert.equal(sessions[0].count, 3);
+      const timeline = await (await fetch(`${base}/frames/${op._id}?sessionId=${row.sessionId}&index=1&after=0`)).json();
+      assert.deepEqual(timeline.map(f => f.videoTimeMs), [100, 200]);
+      await Operation.updateOne({ _id: op._id }, { endTime: new Date() });
+      assert.equal((await post({ ...row, frameId: 4 })).status, 409);
+      assert.equal((await post(localized)).status, 201, 'committed frame retry is safe after end');
+    } finally {
+      await new Promise(resolve => server.close(resolve));
+      await RgbdFrame.deleteMany({ operationId: op._id });
+      await Operation.deleteOne({ _id: op._id });
+      await mongoose.disconnect();
+    }
+  });

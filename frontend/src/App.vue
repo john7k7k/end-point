@@ -63,7 +63,7 @@ const toggleTheme = () => { isLightTheme.value = !isLightTheme.value; localStora
       <div class="brand">
         <div class="brand-mark">V</div>
         <div class="brand-content">
-          <p class="brand-eyebrow">終端定位平台</p>
+          <p class="brand-eyebrow">端點定位平台</p>
           <div class="brand-title-row"><h2>Vision Portal</h2></div>
         </div>
         <div v-if="isAuthenticated" class="brand-account-actions"><RouterLink class="user-avatar" to="/account/profile">{{ currentUser?.name?.charAt(0).toUpperCase() }}</RouterLink><div class="account-hover-card"><strong>{{ currentUser?.name }}</strong><span>{{ currentUser?.email }}</span><small>點擊頭貼查看帳戶資料</small></div></div><div v-else class="brand-account-actions"><button type="button" class="brand-login" @click="openAccount('login')">登入</button></div>

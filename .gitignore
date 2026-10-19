@@ -1,7 +1,17 @@
 backend/node_modules/
 frontend/node_modules/
 AI/video/
+AI/test/*
+!AI/test/rgbd_sender.py
+!AI/test/test_rgbd_sync.py
+!AI/test/test_rgbd_api.py
+!AI/test/rgbd_e2e.py
+!AI/test/rgbd_transport.py
+AI/**/__pycache__/
 runtime/
+# Local presentation authoring runtime cache
+.cache/
+# Reproducible screw-localisation simulation scripts and generated data/figures
 simulation/
 _ppt_work/
 _ppt_restructure_20260803/

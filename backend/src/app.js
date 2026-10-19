@@ -15,6 +15,7 @@ import simulationRoutes from "./routes/simulationRoutes.js";
 import positioningRoutes from "./routes/positioningRoutes.js";
 import operatorTelemetryRoutes from "./routes/operatorTelemetryRoutes.js";
 import calibrationRoutes from "./routes/calibrationRoutes.js";
+import rgbdRoutes from "./routes/rgbdRoutes.js";
 
 const app = express();
 const __filename = fileURLToPath(import.meta.url);
@@ -36,6 +37,7 @@ app.use("/api/simulation", simulationRoutes);
 app.use("/api/positioning", positioningRoutes);
 app.use("/api/operator-telemetry", operatorTelemetryRoutes);
 app.use("/api/calibration", calibrationRoutes);
+app.use("/api/rgbd", rgbdRoutes);
 
 if (existsSync(frontendDistPath)) {
   app.use(express.static(frontendDistPath));
