@@ -8,6 +8,7 @@ import Operation from '../models/Operation.js';
 import OperatorTelemetry from '../models/OperatorTelemetry.js';
 import { fuseFrame, publicFrame, finitePoint } from '../positioning/rgbdFusion.js';
 import { getSimulationConfigValue } from '../controllers/simulationController.js';
+import { deviceAlgorithms as algorithms } from '../positioning/deviceAlgorithms.js';
 
 const router = Router();
 const root = process.env.RGBD_ARCHIVE_ROOT || fileURLToPath(new URL('../../../AI/video/rgbd/', import.meta.url));
@@ -108,7 +109,6 @@ router.get('/snapshot/:operationId/:sessionId/:frameId', async (req, res) => {
     .sort({ frameId: -1 }).limit(1000).select('frameId devicePose').lean();
   const operation = await Operation.findById(operationId).select('endTime').lean();
   const timestamp = new Date(Number(BigInt(frame.captureTimeNs) / 1000000n));
-  const algorithms = ['ekf', 'complementary', 'weighted_average'];
   const deviceAlgorithms = {};
   if (operation?.endTime) {
     await Promise.all(algorithms.map(async algorithm => {

@@ -127,7 +127,7 @@ class PoseBuffer:
             raise ValueError('invalid pose')
         if self.samples and t <= self.samples[-1][0]:
             raise ValueError('pose timestamps must increase')
-        self.samples.append((t, p, q, {k: sample[k] for k in ('uwbRanges', 'imu', 'fusionAlgorithm') if k in sample}))
+        self.samples.append((t, p, q, {k: sample[k] for k in ('uwbRanges', 'imu', 'fusionAlgorithm', 'deviceLocalization') if k in sample}))
 
     def at(self, timestamp):
         for t, p, q, extra in self.samples:

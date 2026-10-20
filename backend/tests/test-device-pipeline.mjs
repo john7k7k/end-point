@@ -14,7 +14,7 @@ test('live saves raw inputs only; end rebuilds all device algorithms', {skip: !p
   await mongoose.connect(process.env.RGBD_TEST_MONGO);
   try {
     pipeline.beginTelemetryOperation(op);
-    for(const algorithm of ['ekf','complementary','weighted_average']) {
+    for(const algorithm of ['ekf','complementary','weighted_average','gwo4d']) {
       getSimulationConfigValue().fusionAlgorithm=algorithm;
       const sample=await pipeline.getSynchronizedDeviceSample(String(op));
       assert.equal(sample.fusionAlgorithm,algorithm);
@@ -22,14 +22,14 @@ test('live saves raw inputs only; end rebuilds all device algorithms', {skip: !p
       assert(sample.imu.acceleration);
       await new Promise(resolve=>setTimeout(resolve,210));
     }
-    assert.equal(await Raw.countDocuments({operationId:op}),3);
+    assert.equal(await Raw.countDocuments({operationId:op}),4);
     assert.equal(await Telemetry.countDocuments({operationId:op}),0);
     const result=await pipeline.finalizeTelemetryOperation(op);
-    assert.equal(result.samples,3);
-    assert.equal(result.telemetry,9);
+    assert.equal(result.samples,4);
+    assert.equal(result.telemetry,16);
     await assert.rejects(()=>pipeline.getSynchronizedDeviceSample(String(op)),/not active/);
     await pipeline.rebuildTelemetryForOperation(op);
-    assert.equal(await Telemetry.countDocuments({operationId:op}),9,'replay is repeatable without duplicates');
+    assert.equal(await Telemetry.countDocuments({operationId:op}),16,'replay is repeatable without duplicates');
   } finally {
     pipeline.default.end(true);
     await Raw.deleteMany({operationId:op});await Telemetry.deleteMany({operationId:op});

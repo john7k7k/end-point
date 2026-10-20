@@ -1,3 +1,5 @@
+import { solveGwo4d, cleanGwoRanges } from './gwo4d.js';
+import { deviceAlgorithms } from './deviceAlgorithms.js';
 const anchors = [
   [0, 0, 0], [20, 0, 0], [0, 12, 0], [20, 12, 0],
   [0, 0, 2.5], [20, 0, 2.5], [0, 12, 2.5], [20, 12, 2.5]
@@ -14,6 +16,8 @@ const createInertialState = () => ({
 });
 const complementaryState = createInertialState();
 const weightedAverageState = createInertialState();
+const gwoState = createInertialState();
+const targetFor = algorithm => algorithm === 'gwo4d' ? gwoState : algorithm === 'complementary' ? complementaryState : algorithm === 'weighted_average' ? weightedAverageState : state;
 const resetState = (target) => Object.assign(target, createInertialState());
 
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
@@ -38,7 +42,7 @@ const validRangesFrom = (ranges) => ranges.filter((item) => Number.isInteger(ite
 const recordRanges = (target, ranges) => {
   target.latestRanges = ranges.map(({ stationId, distance }) => ({ stationId, distance: Number(distance.toFixed(3)) }));
 };
-const integrateImu = (target, acceleration, gyroscope, now) => {
+const integrateImu = (target, acceleration, gyroscope, now, integratePosition = true) => {
   const dt = clamp((now - target.lastUpdate) / 1000, 0.001, 0.1);
   target.lastUpdate = now;
   target.latestImu = {
@@ -47,7 +51,7 @@ const integrateImu = (target, acceleration, gyroscope, now) => {
   };
   const gyro = [gyroscope.x, gyroscope.y, gyroscope.z].map((value) => Number(value || 0) * Math.PI / 180);
   target.quaternion = normalizeQuaternion(quaternionMultiply(target.quaternion, [1, gyro[0] * dt / 2, gyro[1] * dt / 2, gyro[2] * dt / 2]));
-  for (let axis = 0; axis < 3; axis += 1) {
+  for (let axis = 0; integratePosition && axis < 3; axis += 1) {
     const value = Number(acceleration[['x', 'y', 'z'][axis]] || 0);
     target.position[axis] += target.velocity[axis] * dt + value * dt * dt / 2;
     target.velocity[axis] += value * dt;
@@ -125,6 +129,7 @@ const updateWeightedAverage = (ranges) => {
 };
 
 export const predict = (acceleration, gyroscope, now = Date.now(), algorithm = "ekf") => {
+  if (algorithm === 'gwo4d') return integrateImu(gwoState, acceleration, gyroscope, now, false);
   if (algorithm === "complementary") return integrateImu(complementaryState, acceleration, gyroscope, now);
   if (algorithm === "weighted_average") return integrateImu(weightedAverageState, acceleration, gyroscope, now);
   const dt = clamp((now - state.lastUpdate) / 1000, 0.001, 0.1);
@@ -144,6 +149,17 @@ export const predict = (acceleration, gyroscope, now = Date.now(), algorithm = "
 
 // Error-state position correction from up to eight UWB range measurements.
 export const updateUwb = (ranges, algorithm = "ekf") => {
+  if (algorithm === 'gwo4d') {
+    const valid = cleanGwoRanges(ranges); recordRanges(gwoState, valid);
+    const solution = solveGwo4d(valid);
+    const { position, positionVariance, ...diagnostics } = solution;
+    gwoState.deviceLocalization = diagnostics;
+    if (solution.status === 'ready') {
+      gwoState.position = position; gwoState.positionVariance = positionVariance;
+      gwoState.velocity = [0,0,0];
+    }
+    return solution.status === 'ready';
+  }
   if (algorithm === "complementary") return updateComplementary(ranges);
   if (algorithm === "weighted_average") return updateWeightedAverage(ranges);
   const validRanges = ranges.filter((item) => Number.isInteger(item.stationId) && anchors[item.stationId] && Number.isFinite(item.distance));
@@ -197,7 +213,7 @@ export const stepVirtual = (algorithm = "ekf") => {
   predict(measurement.acceleration, measurement.gyroscope, Date.now(), algorithm);
   updateUwb(measurement.ranges, algorithm);
   // Simulated heading reference (e.g. a calibrated IMU yaw reference).
-  const target = algorithm === "complementary" ? complementaryState : algorithm === "weighted_average" ? weightedAverageState : state;
+  const target = targetFor(algorithm);
   target.quaternion = [Math.cos(measurement.heading / 2), 0, 0, Math.sin(measurement.heading / 2)];
   return measurement;
 };
@@ -206,30 +222,35 @@ export const stepVirtual = (algorithm = "ekf") => {
 // historical paths can be compared fairly instead of each receiving new noise.
 export const stepVirtualAll = () => {
   const measurement = virtualMeasurements();
-  for (const algorithm of ["ekf", "complementary", "weighted_average"]) {
+  for (const algorithm of deviceAlgorithms) {
     predict(measurement.acceleration, measurement.gyroscope, Date.now(), algorithm);
     updateUwb(measurement.ranges, algorithm);
-    const target = algorithm === "complementary" ? complementaryState : algorithm === "weighted_average" ? weightedAverageState : state;
+    const target = targetFor(algorithm);
     target.quaternion = [Math.cos(measurement.heading / 2), 0, 0, Math.sin(measurement.heading / 2)];
   }
   return measurement;
 };
 
-export const resetAllFilters = (timestamp = Date.now()) => { resetState(state); resetState(complementaryState); resetState(weightedAverageState); state.lastUpdate = timestamp; complementaryState.lastUpdate = timestamp; weightedAverageState.lastUpdate = timestamp; };
+export const resetAllFilters = (timestamp = Date.now()) => {
+  for (const target of [state, complementaryState, weightedAverageState, gwoState]) {
+    resetState(target); delete target.deviceLocalization; target.lastUpdate = timestamp;
+  }
+};
 export const setHeading = (heading, algorithm = "ekf") => {
-  const target = algorithm === "complementary" ? complementaryState : algorithm === "weighted_average" ? weightedAverageState : state;
+  const target = targetFor(algorithm);
   target.quaternion = [Math.cos(heading / 2), 0, 0, Math.sin(heading / 2)];
 };
 
 export const getFilterState = (algorithm = "ekf") => {
-  const target = algorithm === "complementary" ? complementaryState : algorithm === "weighted_average" ? weightedAverageState : state;
+  const target = targetFor(algorithm);
   return {
   position: Object.fromEntries(['x', 'y', 'z'].map((axis, index) => [axis, Number(target.position[index].toFixed(3))])),
   quaternion: Object.fromEntries(['w', 'x', 'y', 'z'].map((axis, index) => [axis, Number(target.quaternion[index].toFixed(5))])),
   orientation: Object.fromEntries(Object.entries(eulerFromQuaternion(target.quaternion)).map(([key, value]) => [key, Number(value.toFixed(2))])),
   anchorCount: anchors.length,
   uwbRanges: target.latestRanges,
-  imu: target.latestImu
+  imu: target.latestImu,
+  ...(algorithm === 'gwo4d' ? { deviceLocalization: target.deviceLocalization || {algorithm:'gwo4d',status:'awaiting_ranges'} } : {})
 };
 };
 

@@ -44,6 +44,8 @@ async def run(args):
                         position=telemetry['position'], quaternion=telemetry['quaternion'],
                         uwbRanges=telemetry.get('uwbRanges', []), imu=telemetry.get('imu'),
                         fusionAlgorithm=telemetry['fusionAlgorithm'])
+            if telemetry.get('deviceLocalization'):
+                pose['deviceLocalization'] = telemetry['deviceLocalization']
             h = dict(base, frameId=index, colorCaptureTimeNs=str(timestamp),
                      depthCaptureTimeNs=str(timestamp + (50_000_000 if args.skew_every and index % args.skew_every == 0 else 0)),
                      calibrationId='default', depthScaleMeters=.001, depthAlignedToColor=True,

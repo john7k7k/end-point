@@ -1,0 +1,246 @@
+# VS Code：REST Client (humao.rest-client)，逐一點 Send Request，勿 Send All。
+# https://marketplace.visualstudio.com/items?itemName=humao.rest-client
+# 本檔包含現有後端全部 REST 路由與 AI 業務 API（不含 Swagger 自動文件）。
+# GET 可能觸發既有模擬量測產生；POST/PUT/PATCH/DELETE 會改資料。
+# 建議流程：註冊／登入 → startOperation → prepareAi → 感測／串流 → endOperation。
+# 正式串流建議用 platform.mqtt 的 start/ACK 流程，避免 HTTP start 與 AI ready 的時間差。
+# 注意：HTTP device/start 目前不通知 AI，故另列 prepareAi；一般 operations CRUD 不啟動 AI。
+# 多數 API 目前未加 JWT 驗證 middleware，token 不等於已有完整存取控制，勿直接開到公網。
+# 請修改測試帳密、id、sessionId、filename。刪除區塊預設使用不存在的 0 ID，避免誤刪。
+# AI 的 8000 埠須由伺服器／WSL 開放給本機，否則外部呼叫不到（後端內部可正常呼叫）。
+# 同幀 RGB-D 二進位傳輸是 WebSocket ws://192.168.0.156:8000/ws/rgbd，不能用純 HTTP 取代。
+
+@host = 192.168.0.156
+@base = http://{{host}}:3000
+@api = {{base}}/api
+@ai = http://{{host}}:8000
+@email = api-demo@example.com
+@password = ExampleOnly-ChangeMe123!
+@userId = {{login.response.body.$.user.id}}
+@operationId = {{startOperation.response.body.$.operationId}}
+@detectionId = 000000000000000000000000
+@deleteUserId = 000000000000000000000000
+@deleteOperationId = 000000000000000000000000
+@sessionId = 00000000-0000-4000-8000-000000000001
+@frameId = 0
+@captureTimeNs = 1792458000000000000
+@receivedTimeNs = 1792458000001000000
+@processedTimeNs = 1792458000002000000
+@atMs = 1792458000000
+@filename = REPLACE_WITH_FILENAME_FROM_LIST.mp4
+# 下列 hash 僅供低階 POST /users 格式展示，請用自行產生的 bcrypt hash 替換。
+# 日常建帳號用 /auth/register，不要自行送 passwordHash。
+@bcryptHash = REPLACE_WITH_A_REAL_BCRYPT_HASH
+
+### 01 註冊（重複 email 回 409，帳密僅示範）
+# @name register
+POST {{api}}/auth/register
+Content-Type: application/json
+
+{"name":"API 範例使用者","email":"{{email}}","password":"{{password}}"}
+
+### 02 登入（先執行此項，userId 從回應取得）
+# @name login
+POST {{api}}/auth/login
+Content-Type: application/json
+
+{"email":"{{email}}","password":"{{password}}"}
+
+### 03 使用者清單
+GET {{api}}/users
+
+### 04 使用者資料
+GET {{api}}/users/{{userId}}
+
+### 05 修改使用者（僅 name、email，不能用此路由改密碼）
+PATCH {{api}}/users/{{userId}}
+Content-Type: application/json
+
+{"name":"API 範例使用者（更新）"}
+
+### 06 低階建立 User（只供舊介面測試，另換 email 並提供正確 bcrypt hash）
+POST {{api}}/users
+Content-Type: application/json
+
+{"name":"Legacy API demo","email":"legacy-api-demo@example.com","passwordHash":"{{bcryptHash}}"}
+
+### 07 查詢後端執行個體（MQTT start 的 backendInstanceId 取此回應）
+GET {{api}}/device/runtime
+
+### 08 HTTP 開始作業（時間由伺服器取現在，回傳 operationId）
+# @name startOperation
+POST {{api}}/device/operation/start
+Content-Type: application/json
+
+{"userId":"{{userId}}"}
+
+### 09 HTTP start 後通知 AI 準備影像（MQTT start 已處理，不要重複 reset）
+# @name prepareAi
+POST {{ai}}/api/operation-update
+Content-Type: application/json
+
+{"opID":"{{operationId}}"}
+
+### 10 查詢設備作業
+GET {{api}}/device/operation/{{operationId}}
+
+### 11 取得當下選定算法的設備 pose（須 active，否則 409；可能生成模擬原始資料）
+GET {{api}}/device/pose/{{operationId}}
+
+### 12 目前作業（無作業為 404）
+GET {{api}}/operations/active
+
+### 13 全部作業
+GET {{api}}/operations
+
+### 14 指定使用者的作業
+GET {{api}}/operations/user/{{userId}}
+
+### 15 指定作業
+GET {{api}}/operations/{{operationId}}
+
+### 16 修改作業備註（不要用此路由直接 endTime，會繞過重算流程）
+PATCH {{api}}/operations/{{operationId}}
+Content-Type: application/json
+
+{"description":"手動 API 串接測試"}
+
+### 17 低階建立歷史作業紀錄（只有 DB CRUD，不啟動串流）
+POST {{api}}/operations
+Content-Type: application/json
+
+{"userId":"{{userId}}","startTime":"2026-10-20T01:00:00Z","endTime":"2026-10-20T01:01:00Z","description":"API metadata-only example"}
+
+### 18 查詢演算法設定
+GET {{api}}/simulation/config
+
+### 19 選擇設備與螺絲算法（後端會轉送 AI；AI 不可達時 503 但後端已保存）
+# fusionAlgorithm: ekf / complementary / weighted_average / gwo4d
+# screwFusionAlgorithm: average / ekf / es_ekf / rmv_fgo
+POST {{api}}/simulation/config
+Content-Type: application/json
+
+{"fusionAlgorithm":"gwo4d","screwFusionAlgorithm":"rmv_fgo"}
+
+### 20 取得相機外參（translation m，rotationDegrees °）
+GET {{api}}/calibration/camera-extrinsics
+
+### 21 設定相機外參（示範零外參，會覆寫真實設定，確認後才執行）
+PUT {{api}}/calibration/camera-extrinsics
+Content-Type: application/json
+
+{"translation":{"x":0,"y":0,"z":0},"rotationDegrees":{"x":0,"y":0,"z":0}}
+
+### 22 舊 detection 模擬入口（FOV 內無螺絲時 204，不是錯誤；不能當真實 YOLO 上傳）
+# @name createDetection
+POST {{api}}/detections
+Content-Type: application/json
+
+{"operationId":"{{operationId}}","timestamp":"{{$datetime iso8601}}","objectClass":"M4 hex screw","bbox":{"x":250,"y":130,"width":50,"height":40},"detectionAlgorithm":"mock_yolo"}
+
+### 23 全部 detection
+GET {{api}}/detections
+
+### 24 作業 detection
+GET {{api}}/detections/{{operationId}}
+
+### 25 修改 detection（detectionId 換成測試紀錄，既有融合結果不會自動重算）
+PATCH {{api}}/detections/{{detectionId}}
+Content-Type: application/json
+
+{"objectClass":"M4 hex screw"}
+
+### 26 即時定位（選定設備＋螺絲融合）
+GET {{api}}/positioning/latest/{{operationId}}?source=live&screwAlgorithm=rmv_fgo
+
+### 27 歷史定位（at Unix ms；無已保存 telemetry 時 404）
+GET {{api}}/positioning/latest/{{operationId}}?source=history&algorithm=gwo4d&screwAlgorithm=rmv_fgo&at={{atMs}}
+
+### 28 按 detection 查定位
+GET {{api}}/positioning/latest/{{operationId}}?detectionId={{detectionId}}&screwAlgorithm=es_ekf
+
+### 29 設備歷史 Telemetry（多算法，最多 320 筆）
+GET {{api}}/operator-telemetry/{{operationId}}?at={{atMs}}
+
+### 30 影片清單（先取 filename，才發下一項）
+GET {{api}}/videos/{{operationId}}
+
+### 31 MP4 影片（可測 Range，無檔案為 404）
+GET {{api}}/videos/{{operationId}}/{{filename}}
+Range: bytes=0-1023
+
+### 32 RGB-D session 清單（把 _id 貼入 sessionId）
+GET {{api}}/rgbd/sessions/{{operationId}}
+
+### 33 RGB-D frame 清單
+GET {{api}}/rgbd/frames/{{operationId}}?sessionId={{sessionId}}&after=-1&limit=100
+
+### 34 RGB-D 播放索引（frameId 與 videoTimeMs，最多 500）
+GET {{api}}/rgbd/frames/{{operationId}}?sessionId={{sessionId}}&index=1&limit=500
+
+### 35 最新同幀 snapshot（bbox、螺絲融合、設備、軌跡）
+GET {{api}}/rgbd/snapshot/{{operationId}}/{{sessionId}}/latest
+
+### 36 指定同幀 snapshot
+GET {{api}}/rgbd/snapshot/{{operationId}}/{{sessionId}}/{{frameId}}
+
+### 37 同幀彩色 JPEG（需 AI 已保存對應封包）
+GET {{api}}/rgbd/media/{{operationId}}/{{sessionId}}/{{frameId}}/color
+
+### 38 同幀深度預覽 JPEG（只作顯示，原始深度仍在 RGB-D 封包）
+GET {{api}}/rgbd/media/{{operationId}}/{{sessionId}}/{{frameId}}/depth
+
+### 39 AI → backend 原始寫入介面（僅 metadata 測試，會寫 DB，不能產生影像檔）
+# 請使用獨立測試 session，不要插入正在串流的 session。同一 tuple 重送是冪等。
+# 若作業已結束回 409。奈秒值為十進位字串，不是 JSON number。
+POST {{api}}/rgbd/frames
+Content-Type: application/json
+
+{
+  "operationId":"{{operationId}}",
+  "sessionId":"00000000-0000-4000-8000-000000000099",
+  "frameId":0,
+  "captureTimeNs":"{{captureTimeNs}}",
+  "receivedTimeNs":"{{receivedTimeNs}}",
+  "processedTimeNs":"{{processedTimeNs}}",
+  "status":"no_detection",
+  "metadata":{"calibrationId":"default","clockId":"manual-api-demo","width":640,"height":360},
+  "devicePose":{"position":{"x":5,"y":3,"z":1.4},"quaternion":{"w":1,"x":0,"y":0,"z":0},"fusionAlgorithm":"gwo4d"},
+  "result":{"observations":[]},
+  "selectedAlgorithm":"rmv_fgo"
+}
+
+### 40 AI RGB-D 狀態（查目前 sessionId、lastFrameId、missingFrames）
+GET {{ai}}/api/rgbd/status
+
+### 41 已融合 pose 直接傳 AI（先有 WebSocket hello，operation/session/clock 須一致）
+# timestampNs 必須與相機使用同時基且嚴格遞增。這不會建立原始 UWB/IMU DB 紀錄。
+POST {{ai}}/api/rgbd/pose
+Content-Type: application/json
+
+{"operationId":"{{operationId}}","sessionId":"{{sessionId}}","clockId":"lab-edge-unix-ns","timestampNs":"{{captureTimeNs}}","position":{"x":5,"y":3,"z":1.4},"quaternion":{"w":1,"x":0,"y":0,"z":0},"fusionAlgorithm":"gwo4d"}
+
+### 42 AI 內部設定介面（一般請用 backend /simulation/config，直接改會造成兩端設定不一致）
+POST {{ai}}/api/simulation-config
+Content-Type: application/json
+
+{"fusionAlgorithm":"gwo4d","screwFusionAlgorithm":"rmv_fgo"}
+
+### 43 HTTP 結束作業（先停止串流，會重算設備路徑並通知 AI）
+# @name endOperation
+POST {{api}}/device/operation/end
+Content-Type: application/json
+
+{"opID":"{{operationId}}","endTime":"{{$datetime iso8601}}","description":"API example ended"}
+
+### 44 AI 內部結束（只停 AI，不會設定 DB endTime，一般用上方完整結束流程）
+POST {{ai}}/api/operation-end
+
+### 45 刪除 detection（不可復原，僅測試 id，非級聯刪除）
+DELETE {{api}}/detections/{{detectionId}}
+
+### 46 刪除作業（不可復原，不會級聯移除影片／Telemetry，也不會正常終止串流）
+DELETE {{api}}/operations/{{deleteOperationId}}
+
+### 47 刪除使用者（不可復原，僅測試帳號，不會級聯刪除作業）
+DELETE {{api}}/users/{{deleteUserId}}

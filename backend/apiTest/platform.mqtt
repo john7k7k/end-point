@@ -1,0 +1,127 @@
+# VS Code：MQTT Client (kwkmp.mqttclient)，使用 Legacy .mqtt 格式。
+# https://marketplace.visualstudio.com/items?itemName=kwkmp.mqttclient
+# 先 Connect，再 Subscribe all，最後單獨點選 Publish message。不要一次發送全部範例。
+# 只在同一區網／受信任測試網使用，目前範例未設定 broker 帳密與 TLS。
+# 1. 用 platform.http 登入取得真實 userId，GET /api/device/runtime 取得 backendInstanceId。
+# 2. 更新下列變數。requestId 每次新作業換一個值，開始不要重複點擊（會建立多筆作業）。
+# 3. 發 start，收到 vision/operation/ack/{userId} 後將 opID 貼入 operationId。
+#    確認 ACK 的 requestId、backendInstanceId 都相同，才開始 RTSP／RGB-D 傳輸。
+# 4. 兩種感測模式擇一：raw UWB＋IMU，或上游已融合 pose。不要混用假資料與真資料。
+# 5. 停止影像／RGB-D 後再發 operation/end。endTime 必須改為停止當下的 UTC 時間。
+# 本檔只發送單筆範例，不會自動產生高頻感測資料或自動填入 ACK。
+# timestampMs=0 在 raw UWB/IMU handler 中代表使用伺服器接收時間。
+# 正式端請填感測時刻的 Unix 毫秒整數。timestampNs 則是同 clockId 的奈秒字串，須遞增。
+# pose 必須先有 /ws/rgbd hello 建立相同 operation/session/clock 的會話，否則 AI 拒絕。
+# 補充：vision/depth 目前無後端訂閱者，故不列作有效 API。
+# ACK 與 notification 為伺服器輸出，只訂閱，不提供偽造 ACK 的 Publish 按鈕。
+# ACK 範例：{"opID":"...","backendInstanceId":"...","requestId":"manual-start-001"}
+# 提示範例：{"level":"info","text":"附近有螺絲…","timestamp":"2026-10-20T01:00:00Z"}
+
+host=192.168.0.156
+userId=000000000000000000000000
+operationId=000000000000000000000000
+backendInstanceId=REPLACE_WITH_GET_DEVICE_RUNTIME_RESULT
+requestId=manual-start-001
+timestampMs=0
+timestampNs=1792458000000000000
+endTime=2026-10-20T01:05:00Z
+sessionId=00000000-0000-4000-8000-000000000001
+clockId=lab-edge-unix-ns
+
+# %%
+url: mqtt://{{host}}:1883
+reconnectPeriod: 3000
+
+# $$
+vision/operation/ack/{{userId}}
+vision/notification
+vision/uwb/ranges
+vision/imu/data
+vision/device/pose
+vision/detection
+vision/operation/start
+vision/operation/end
+
+# ## 01 開始作業（寫入 DB，等待 AI ready 後回 ACK）
+topic: vision/operation/start
+qos: 2
+retain: false
+
+{
+  "userId": "{{userId}}",
+  "requestId": "{{requestId}}",
+  "backendInstanceId": "{{backendInstanceId}}"
+}
+
+# ## 02 原始 UWB 距離（m，stationId 0～7，場域 20×12 m，上層站高 2.5 m）
+topic: vision/uwb/ranges
+qos: 1
+retain: false
+
+{
+  "timestamp": {{timestampMs}},
+  "ranges": [
+    {"stationId": 0, "distance": 6.297},
+    {"stationId": 1, "distance": 15.661},
+    {"stationId": 2, "distance": 10.690},
+    {"stationId": 3, "distance": 17.849},
+    {"stationId": 4, "distance": 6.233},
+    {"stationId": 5, "distance": 15.636},
+    {"stationId": 6, "distance": 10.652},
+    {"stationId": 7, "distance": 17.828}
+  ]
+}
+
+# ## 03 原始 IMU（acceleration m/s²，gyroscope °/s，不是 rad/s 或 Euler 角）
+topic: vision/imu/data
+qos: 1
+retain: false
+
+{
+  "timestamp": {{timestampMs}},
+  "acceleration": {"x": 0.01, "y": -0.02, "z": 0.0},
+  "gyroscope": {"x": 0.0, "y": 0.0, "z": 0.5}
+}
+
+# ## 04 已融合 pose（只轉交 AI PoseBuffer，不會代替 raw 資料重算四條歷史路徑）
+topic: vision/device/pose
+qos: 1
+retain: false
+
+{
+  "operationId": "{{operationId}}",
+  "sessionId": "{{sessionId}}",
+  "clockId": "{{clockId}}",
+  "timestampNs": "{{timestampNs}}",
+  "position": {"x": 5.0, "y": 3.0, "z": 1.4},
+  "quaternion": {"w": 1.0, "x": 0.0, "y": 0.0, "z": 0.0},
+  "fusionAlgorithm": "gwo4d",
+  "deviceLocalization": {
+    "algorithm": "gwo4d", "status": "ready",
+    "biasMeters": 0.3, "biasBounds": [0, 0.6], "validAnchorCount": 8
+  }
+}
+
+# ## 05 舊版 detection 測試入口（仍走模擬 FOV／深度，非真實同幀 YOLO 上傳介面）
+topic: vision/detection
+qos: 1
+retain: false
+
+{
+  "operationId": "{{operationId}}",
+  "timestamp": "2026-10-20T01:00:00Z",
+  "objectClass": "M4 hex screw",
+  "bbox": {"x": 250, "y": 130, "width": 50, "height": 40},
+  "detectionAlgorithm": "mock_yolo"
+}
+
+# ## 06 結束作業（opID 不是 operationId，先將 endTime 改為現在）
+topic: vision/operation/end
+qos: 2
+retain: false
+
+{
+  "opID": "{{operationId}}",
+  "endTime": "{{endTime}}",
+  "description": "Manual API example finished"
+}

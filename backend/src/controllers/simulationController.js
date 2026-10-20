@@ -1,4 +1,4 @@
-const allowedFusionAlgorithms = ["ekf", "complementary", "weighted_average"];
+import { deviceAlgorithms as allowedFusionAlgorithms } from '../positioning/deviceAlgorithms.js';
 const allowedScrewFusionAlgorithms = ["average", "ekf", "es_ekf", "rmv_fgo"];
 
 let simulationConfig = {

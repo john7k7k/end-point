@@ -23,7 +23,7 @@ def run(preview=False, paired_videos=False):
     workspace = Path(__file__).resolve().parents[2]
     with tempfile.TemporaryDirectory(prefix='rgbd-e2e-') as temp:
         env = dict(os.environ, RGBD_ARCHIVE_ROOT=str(Path(temp)))
-        process = subprocess.Popen(['node', 'backend/apiTest/rgbd-e2e-server.mjs'], cwd=workspace,
+        process = subprocess.Popen(['node', 'backend/tests/rgbd-e2e-server.mjs'], cwd=workspace,
                                    env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
         try:
             while True:
