@@ -13,12 +13,49 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'AI'))
-from archive_recorder import ArchiveRecorder, RTSP_INPUT_OPTIONS
+from archive_recorder import ArchiveRecorder, RTSP_INPUT_OPTIONS, progress_has_media, segment_has_packets
+from collections import deque
 from stream_sources import keyframe_interval
 import main
 
 
 class RecordingTests(unittest.TestCase):
+    def test_ffmpeg6_progress_without_frame_field(self):
+        for value in (b'out_time_us=123456\n', b'out_time_ms=123456\n', b'frame=5\n'):
+            self.assertTrue(progress_has_media(value))
+        for value in (b'frame=N/A\n', b'out_time_us=N/A\n', b'frame=\n', b'out_time_us=0\n', b'out_time_us=-1\n', b'progress=end\n'):
+            self.assertFalse(progress_has_media(value))
+
+    def test_nonempty_segment_uses_packets_not_progress(self):
+        recorder = ArchiveRecorder.__new__(ArchiveRecorder)
+        recorder.parts, recorder.unverified_parts, recorder.errors = [], [], deque(maxlen=16)
+        recorder.has_frames = False
+        with tempfile.TemporaryDirectory(prefix='vision-segment-test-') as temporary:
+            part = Path(temporary) / 'segment.mkv'
+            part.write_bytes(b'nonempty-fixture')
+            with patch('archive_recorder.segment_has_packets', return_value=True):
+                recorder._retain_segment(part)
+            self.assertTrue(recorder.has_frames)
+            self.assertEqual(recorder.parts, [part])
+            self.assertTrue(part.exists(), 'missing frame= never causes deletion')
+            recorder.parts.clear()
+            with patch('archive_recorder.segment_has_packets', side_effect=RuntimeError('injected probe error')):
+                recorder._retain_segment(part)
+            self.assertTrue(part.exists(), 'unknown nonempty segment must survive')
+            self.assertEqual(recorder.unverified_parts, [part])
+            with patch('archive_recorder.segment_has_packets', return_value=False):
+                recorder._retain_segment(part)
+            self.assertFalse(part.exists(), 'delete only after a confirmed zero-packet result')
+
+    def test_packet_probe_requires_known_count(self):
+        from types import SimpleNamespace
+        for count, expected in [('10', True), ('0', False)]:
+            with patch('archive_recorder.subprocess.run', return_value=SimpleNamespace(returncode=0, stdout=json.dumps({'streams':[{'nb_read_packets':count}]}))):
+                self.assertEqual(segment_has_packets(Path('fixture.mkv')), expected)
+        with patch('archive_recorder.subprocess.run', return_value=SimpleNamespace(returncode=0, stdout='{"streams":[{"nb_read_packets":"N/A"}]}')):
+            with self.assertRaisesRegex(RuntimeError, 'unknown'):
+                segment_has_packets(Path('fixture.mkv'))
+
     def test_recording_is_not_gated_on_decoder(self):
         self.assertNotIn('start_archive_recorder(', inspect.getsource(main.process_stream))
         self.assertNotIn('stop_archive_recorders(', inspect.getsource(main.process_stream))
@@ -51,6 +88,10 @@ class RecordingTests(unittest.TestCase):
             config.write_text(f'logLevel: warn\nrtspAddress: 127.0.0.1:{port}\nrtspTransports: [tcp]\nrtmp: no\nhls: no\nwebrtc: no\nsrt: no\napi: no\nplayback: no\npaths:\n  all_others:\n')
             server = subprocess.Popen([str(media), str(config)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             recorder, publisher = None, None
+            # Regress the FFmpeg 6 failure: ignore ALL progress hints and still
+            # require real packet validation to preserve both recorded segments.
+            progress_patch = patch('archive_recorder.progress_has_media', return_value=False)
+            progress_patch.start()
             try:
                 for _ in range(100):
                     try:
@@ -90,6 +131,7 @@ class RecordingTests(unittest.TestCase):
                 if recorder:
                     recorder.request_stop()
                     recorder.finish()
+                progress_patch.stop()
                 server.terminate()
                 server.wait(timeout=5)
 
