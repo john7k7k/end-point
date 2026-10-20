@@ -1,8 +1,38 @@
 # 邊緣影像端串接說明書（RGB-D）
 
-版本：2026-10-19。依 `AI/rgbd_sync.py`、`AI/rgbd_api.py`、`AI/test/rgbd_transport.py` 與目前啟動腳本整理。
+版本：2026-10-19（實驗室 WSL 區網／遠端發送版）。依 `AI/rgbd_sync.py`、`AI/rgbd_api.py`、`AI/test/rgbd_transport.py`、`AI/test/paired_video.py` 與目前啟動腳本整理。
 
 本文件交付給 RGB-D 相機／邊緣運算組員，定義影像如何送入本系統、如何與設備姿態對時，以及伺服器如何確認處理與儲存。
+
+## 0. 本次聯調資訊與快速啟動
+
+目前主機為 Wi-Fi 位址 `192.168.0.156` 的 Windows 電腦，應用部署於其 WSL。影像發送器可以在另一台可互連的同 Wi-Fi 電腦執行，不需要公網 IP。
+
+| 項目 | 本次使用值 |
+|---|---|
+| 主機 Wi-Fi IP | `192.168.0.156`，主機換IP時所有端點及轉送規則須同步更新 |
+| MQTT | `192.168.0.156:1883` |
+| 後端／網站 | `http://192.168.0.156:3000` |
+| RGB-D WebSocket | `ws://192.168.0.156:8000/ws/rgbd` |
+| 彩色 RTSP | `rtsp://192.168.0.156:8554/cam-color` |
+| 深度 RTSP | `rtsp://192.168.0.156:8554/cam-depth` |
+| 操作帳號 | 主機資料庫中實際存在的使用者 ObjectId，不是發送電腦的舊帳號 |
+
+**Windows 發送電腦**於專案目錄執行：
+
+```powershell
+python .\AI\test\test2.py --server 192.168.0.156 --user-id 貼上遠端帳號ID --rgbd
+```
+
+**WSL／Linux 發送電腦**於已安裝依賴的專案目錄執行：
+
+```bash
+.venv/bin/python AI/test/test2.py --server 192.168.0.156 --user-id 貼上遠端帳號ID --rgbd
+```
+
+--server 會統一設定 MQTT、HTTP、WebSocket與RTSP，不必手動修改程式內的 localhost。看到 Using backend、各遠端位址與 Subscribed 後，輸入 s 開始；e 結束、q 退出。它只是在模擬邊緣設備，不是真實相機驅動。
+
+操作控制只由一個程式負責：使用 test2 時，不要又讓感測器端或主機上的另一個 test2 再建立第二筆操作。主機的 Node、AI、MediaMTX、MongoDB與MQTT需先啟動；發送電腦只需發送工具與相關依賴，不必另啟本機平台。
 
 ## 1. 影像端需要完成的工作
 
@@ -50,21 +80,104 @@ flowchart TD
 
 ## 3. 網路與連線位址
 
-以 `<SERVER>` 表示邊緣端實際可連線的伺服器位址。
+本次以 `192.168.0.156` 作為邊緣端可連線的主機位址；若重新分配Wi-Fi IP，請同步更新。
 
 | 用途 | 位址 | 必要性 |
 |---|---|---|
-| MQTT 操作控制 | `mqtt://<SERVER>:1883` | 目前操作開始／結束流程使用 |
-| RGB-D 同幀上傳 | `ws://<SERVER>:8000/ws/rgbd` | 此文件主要介面 |
-| AI 同幀狀態 | `http://<SERVER>:8000/api/rgbd/status` | 聯調診斷 |
-| 後端識別 | `http://<SERVER>:3000/api/device/runtime` | ACK 來源配對 |
-| 彩色 RTSP 預覽／錄影 | `rtsp://<SERVER>:8554/cam-color` | 舊版預覽／獨立錄影需要時使用 |
-| 深度 RTSP 預覽／錄影 | `rtsp://<SERVER>:8554/cam-depth` | 顯示用，可選 |
-| 網站 | `http://<SERVER>:3000` | 使用者查看 |
+| MQTT 操作控制 | `mqtt://192.168.0.156:1883` | 目前操作開始／結束流程使用 |
+| RGB-D 同幀上傳 | `ws://192.168.0.156:8000/ws/rgbd` | 此文件主要介面 |
+| AI 同幀狀態 | `http://192.168.0.156:8000/api/rgbd/status` | 聯調診斷 |
+| 後端識別 | `http://192.168.0.156:3000/api/device/runtime` | ACK 來源配對 |
+| 彩色 RTSP 預覽／錄影 | `rtsp://192.168.0.156:8554/cam-color` | test2目前會發布 |
+| 深度 RTSP 預覽／錄影 | `rtsp://192.168.0.156:8554/cam-depth` | test2目前會發布；自製封包發送器可不使用 |
+| 網站 | `http://192.168.0.156:3000` | 使用者查看 |
 
-**預設 WSL 腳本將服務綁定 127.0.0.1；Docker MQTT 也只映射到 loopback。** 因此同 Wi-Fi 的另一台設備不能直接照上述 SERVER 位址連入。需先約定使用區網監聽、受控反向代理或 VPN／SSH 通道，再設定實際 endpoint。這些跨機通路不是現有本機啟動腳本自動完成的功能。
+**預設 WSL 腳本將服務綁定 127.0.0.1；Docker MQTT 也只映射到 loopback。** 本次用主機Windows的portproxy與防火牆規則提供區網入口。這些規則需在主機另外設定，單純部署好WSL或開啟網站localhost不代表其他設備已可連入。
 
 在邊緣端填 `localhost`，連到的是邊緣端自己，不是伺服器。正式跨網路使用時需配置設備認證及加密；目前 WebSocket 原型本身沒有完整設備授權流程。
+
+### 3.1 主機端啟動與本機檢查
+
+在 **192.168.0.156主機的WSL專案目錄**：
+
+```bash
+docker compose -f deploy/compose.infra.yml up -d
+bash start-system.sh --check
+bash start-system.sh
+```
+
+已啟動時先用 -status 查看，需要重啟則退出test2後使用 -reboot，不要同時啟動Windows版平台。
+
+在**主機Windows PowerShell**確認其本機四個埠：
+
+```powershell
+Test-NetConnection 127.0.0.1 -Port 1883
+Test-NetConnection 127.0.0.1 -Port 3000
+Test-NetConnection 127.0.0.1 -Port 8000
+Test-NetConnection 127.0.0.1 -Port 8554
+```
+
+如果主機自己連不到，先排除服務／容器／WSL localhost轉送，不能靠新增區網防火牆規則修復沒有啟動的服務。
+
+### 3.2 主機端建立區網入口
+
+在**主機系統管理員PowerShell**查看現有設定：
+
+```powershell
+netsh interface portproxy show all
+Get-NetFirewallRule -Name 'Endpoint-LAN-MQTT-Web','Endpoint-LAN-Image' -ErrorAction SilentlyContinue
+```
+
+若1883與3000尚未設定，依 `MQTT_IMU_UWB_HANDOVER.md` 的主機網路步驟完成。影像另外需要8000與8554；未設定時執行：
+
+```powershell
+Start-Service iphlpsvc
+netsh interface portproxy add v4tov4 listenaddress=192.168.0.156 listenport=8000 connectaddress=127.0.0.1 connectport=8000
+netsh interface portproxy add v4tov4 listenaddress=192.168.0.156 listenport=8554 connectaddress=127.0.0.1 connectport=8554
+New-NetFirewallRule -Name 'Endpoint-LAN-Image' -DisplayName 'Endpoint LAN image upload' -Direction Inbound -Action Allow -Protocol TCP -LocalAddress 192.168.0.156 -LocalPort 8000,8554 -RemoteAddress LocalSubnet -Profile Any
+```
+
+若已存在相同規則，先核對，無需重複新增。IP變更後須更新舊綁定位址。這是實驗室區網測試用設定，不能視為已完成公網授權／TLS部署。
+
+### 3.3 發送端確認四條通路
+
+在**發送電腦的Windows PowerShell**：
+
+```powershell
+Test-NetConnection 192.168.0.156 -Port 1883
+Test-NetConnection 192.168.0.156 -Port 3000
+Test-NetConnection 192.168.0.156 -Port 8000
+Test-NetConnection 192.168.0.156 -Port 8554
+curl.exe --max-time 5 http://192.168.0.156:3000/api/device/runtime
+```
+
+四個TCP測試應為True；runtime應回backendInstanceId及platform=linux。8000只有TCP通不等於WebSocket握手成功，仍需確認hello取得ready。
+
+目前RTSP發布明確使用TCP，因此這個test2上傳流程不需另外開RTSP UDP埠。MongoDB27017也不需要給邊緣設備使用。若用自製WebSocket發送器而完全不送RTSP，8554不是同幀封包本身的必要條件；但現有test2啟動時會檢查它。
+
+如果從另一台瀏覽器使用舊版WebRTC播放器，另外涉及8889與8189的ICE／媒體通路。這與邊緣端向8000上傳同幀封包是不同的連線，不要混為一個埠。
+
+### 3.4 遠端使用者ID與發送端準備
+
+先在 `http://192.168.0.156:3000` 註冊帳號。在主機WSL專案目錄取得ID：
+
+```bash
+docker compose -f deploy/compose.infra.yml exec -T mongodb \
+  mongosh vision_system --quiet \
+  --eval 'db.users.find({}, {_id:1, username:1, name:1}).toArray()'
+```
+
+--user-id 填24位ObjectId，不是username、john_id或其他主機的帳號ID。
+
+發送電腦需要：Python、`AI/requirements.txt` 中的套件、FFmpeg，以及同版本的test2／rgbd_sender／rgbd_transport／paired_video／rgbd_sync與兩支測試影片。Windows可先執行：
+
+```powershell
+python -m pip install -r AI/requirements.txt
+ffmpeg -version
+python .\AI\test\test2.py --help
+```
+
+Linux／WSL發送端使用自己的Linux虛擬環境，不與Windows共用node_modules或.venv。不要為了發送測試影片另外啟動本機後端或MQTT broker。
 
 ## 4. 操作與識別碼
 
@@ -91,6 +204,8 @@ flowchart TD
 ```
 
 影像封包的 `operationId` 要填這裡的 `opID`，不能自行新建。backendInstanceId 與 requestId 可防止接到其他後端／舊請求的 ACK；目前 requestId 並非伺服器端 start 去重鍵，不要反覆送 start 重試。
+
+本次跨機操作控制應帶上這兩個識別欄位，並只接受相符ACK。更新版test2會自動處理；其他後端或舊請求回覆時會顯示Ignored unrelated ACK。ACK表示AI接受該operation，不代表相機已出第一幀、錄影成功或硬體時鐘已同步。
 
 ### 4.2 各種 ID 的用途
 
@@ -395,14 +510,54 @@ def pack_encoded(header, jpeg_bytes, png16_bytes):
 
 ## 12. RTSP 舊版預覽／獨立錄影
 
+### 12.1 目前雙影片同幀測試
+
+現在 `test2.py --rgbd` 同時使用 `test_color.mp4` 與 `test_depth.mp4`，不再以整張固定距離的平面代替深度影片。
+
+| 部分 | 實際流程 |
+|---|---|
+| 兩路RTSP | 分別發布cam-color／cam-depth，供舊版預覽及獨立錄影 |
+| 同幀主流程 | paired_video共同讀取來源第n幀→彩色JPEG＋深度PNG16→單一RGB-D binary message |
+| 網頁切換 | 同一frameId切換封包內彩色／深度，不以兩條RTSP的最新到達畫面配對 |
+
+手上測試檔：彩色1103幀、958×534；深度1192幀、922×536；均30 FPS。程式配對共同前1103幀，到尾端兩支一起循環，額外89個深度幀不獨立播放。只接受相同FPS；單路解碼失敗即停止，不讓另一軌向前錯位。
+
+共同來源索引只是測試假設，兩個不同尺寸的影片做resize不等於真實RGB-D幾何對齊。程式目前每組輸出讀一對來源影格、預設10組／秒；受ACK背壓影響可更慢，並不保證與獨立30 FPS RTSP預覽相同播放進度。
+
+深度MP4的灰階值採下列**示範映射**：
+
+```text
+demo_depth_mm = round(gray / 255 × 6000)
+depthScaleMeters = 0.001
+gray = 0 -> 無效深度
+```
+
+這讓AI的0–6 m深度預覽保留影片輪廓；米制值仍非實測距離。Metadata保存sourceFrameIndex、sourceLoop、sourceTimeMs、depthValueKind=pseudo-depth-from-gray-video、alignmentKind=demo-resize-assumption及depthMapping。dataSource維持simulation。真正相機接入時直接用SDK的原始uint16深度，不能套這個灰階映射。
+
+獨立測試發送器（**必須已有有效操作、沒有其他發送器**；不會自行建立操作）：
+
+```bash
+.venv/bin/python AI/test/rgbd_sender.py \
+  --operation-id 貼上本次ACK的操作ID \
+  --backend http://192.168.0.156:3000 \
+  --url ws://192.168.0.156:8000/ws/rgbd \
+  --color AI/test/test_color.mp4 \
+  --depth AI/test/test_depth.mp4 \
+  --fps 10 --frames 30
+```
+
+Windows使用python替代.venv/bin/python。此工具會從後端HTTP取得設備姿態並傳到AI；若硬體定位端另走MQTT pose，應選定單一姿態來源並改用對應的相機adapter，不能直接同時發兩條軌跡。
+
+### 12.2 只發布RTSP的參考指令
+
 同幀 WebSocket 已攜帶彩色與原始深度，平台同幀播放器直接使用封包影像。若需要舊版 RTSP 預覽或獨立錄影，可以另發：
 
 ```bash
 ffmpeg -re -stream_loop -1 -i test_color.mp4 -c:v copy -an \
-  -rtsp_transport tcp -f rtsp rtsp://SERVER:8554/cam-color
+  -rtsp_transport tcp -f rtsp rtsp://192.168.0.156:8554/cam-color
 
 ffmpeg -re -stream_loop -1 -i test_depth.mp4 -c:v copy -an \
-  -rtsp_transport tcp -f rtsp rtsp://SERVER:8554/cam-depth
+  -rtsp_transport tcp -f rtsp rtsp://192.168.0.156:8554/cam-depth
 ```
 
 這是測試檔案發布範例；真實相機要由 SDK／編碼器供應即時影格，不能把讀 MP4 當成相機硬體串接。`-c:v copy` 保留來源編碼，不會自動移除 H.264 B-frames；舊版 WebRTC 預覽曾遇到此相容問題，須檢查來源編碼設定。
@@ -454,11 +609,16 @@ ffmpeg -re -stream_loop -1 -i test_depth.mp4 -c:v copy -an \
 | pose_unavailable | 缺 pose、沒有右側插值樣本或間隔超過200 ms |
 | calibration_mismatch | calibrationId 與平台 profile key |
 | 無法連線 | 服務綁 loopback、WSL轉送、位址填錯或防火牆 |
+| 網站能開，test2說影像埠不通 | 分別確認8000與8554，1883／3000可達不足以完成影像上傳 |
+| /api/device/pose回409 | 本次operation是否仍啟用、是否取到另一套後端的ACK |
+| 深度全灰 | 是否在看舊版固定深度紀錄；新測試需使用paired_video並重新錄製 |
+| 深度有輪廓但距離不合理 | MP4亮度映射為示範值；確認不是把這個來源當成真實SDK深度 |
+| FPS不符／paired source frame解碼失敗 | 兩支檔案是否成對、可解碼；不要獨立跳幀或循環修補 |
 
 狀態查詢：
 
 ```bash
-curl http://127.0.0.1:8000/api/rgbd/status
+curl http://192.168.0.156:8000/api/rgbd/status
 ```
 
 伺服器日誌與資料：
@@ -485,3 +645,4 @@ MongoDB vision_system.rgbdframes
 - `MQTT_IMU_UWB_HANDOVER.md`：定位端資料契約。
 - `RGBD_DEVICE_INTEGRATION.md`：設備定位與同幀前端整合。
 - `WSL_DEPLOYMENT_COMMANDS.md`：部署、啟停及資料庫指令。
+- `REMOTE_TEST2.md`：從另一台電腦發送到192.168.0.156的操作流程。

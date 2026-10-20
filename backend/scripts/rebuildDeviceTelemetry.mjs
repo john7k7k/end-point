@@ -21,7 +21,7 @@ try {
     w.once('message',resolve);w.once('error',reject);
     w.once('exit',code=>{if(code)reject(new Error(`Replay worker exited ${code}`));});
   });
-  console.log(`${samples.length} raw samples -> ${rows.length} telemetry records (three algorithms)`);
+  console.log(`${samples.length} raw samples -> ${rows.length} telemetry records (${new Set(rows.map(r=>r.fusionAlgorithm)).size} algorithms)`);
   if(args.includes('--apply')) {
     await Telemetry.deleteMany({operationId:id});
     await Telemetry.insertMany(rows.map(r=>({...r,operationId:id})));

@@ -4,7 +4,7 @@ import { getDeviceTelemetry } from "../mqtt/mqttClient.js";
 import { getSimulationConfigValue } from "./simulationController.js";
 import { getLatestScrewFusionResults, getScrewFusionResult, screwFusionAlgorithms, screwFusionLabels } from "../positioning/screwFusion.js";
 
-const operatorFusionAlgorithms = ["ekf", "complementary", "weighted_average"];
+import { deviceAlgorithms as operatorFusionAlgorithms } from '../positioning/deviceAlgorithms.js';
 
 const fallbackTelemetry = (detection) => ({
   position: detection.devicePosition,

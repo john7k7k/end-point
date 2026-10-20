@@ -16,14 +16,17 @@ const detections = computed(() => frame.value?.fusion?.detections || []);
 const duration = computed(() => index.value.at(-1)?.videoTimeMs || 0);
 const pose = computed(() => frame.value?.devicePose);
 const showPath = ref(true);
-const deviceLabels = { ekf: 'ES-EKF', complementary: '互補濾波', weighted_average: '加權平均' };
-const deviceColors = { ekf: '#2563eb', complementary: '#059669', weighted_average: '#d97706' };
-const visibleAlgorithms = ref(['ekf', 'complementary', 'weighted_average']);
+const deviceLabels = { ekf: 'ES-EKF', complementary: '互補濾波', weighted_average: '加權平均', gwo4d: '4D-GWO + IMU' };
+const deviceColors = { ekf: '#2563eb', complementary: '#059669', weighted_average: '#d97706', gwo4d: '#9333ea' };
+const visibleAlgorithms = ref(['ekf', 'complementary', 'weighted_average', 'gwo4d']);
 const selectedDeviceAlgorithm = ref('ekf');
+const requestedDeviceAlgorithm = ref(null);
 const deviceResults = computed(() => snapshot.value?.deviceAlgorithms || {});
 const hasDeviceResults = computed(() => Object.keys(deviceResults.value).length > 0);
 const sensorTelemetry = computed(() => pose.value?.uwbRanges?.length ? pose.value :
   Object.values(deviceResults.value).find(r => r.telemetry?.uwbRanges?.length)?.telemetry || pose.value);
+const deviceLocalization = computed(() => (props.mode === 'history' && visibleAlgorithms.value.includes('gwo4d')
+  ? deviceResults.value.gwo4d?.telemetry?.deviceLocalization : pose.value?.deviceLocalization));
 const ranges = computed(() => sensorTelemetry.value?.uwbRanges || []);
 const orientation = computed(() => {
   const q = pose.value?.quaternion;
@@ -79,7 +82,11 @@ async function loadFrame(id, force = false) {
     timeMs.value = data.frame.videoTimeMs || 0;
     if (props.mode === 'live') {
       algorithm.value = data.frame.selectedAlgorithm || algorithm.value;
-      selectedDeviceAlgorithm.value = data.frame.devicePose?.fusionAlgorithm || selectedDeviceAlgorithm.value;
+      const incoming = data.frame.devicePose?.fusionAlgorithm;
+      if (!requestedDeviceAlgorithm.value || incoming === requestedDeviceAlgorithm.value) {
+        selectedDeviceAlgorithm.value = incoming || selectedDeviceAlgorithm.value;
+        requestedDeviceAlgorithm.value = null;
+      }
     }
     error.value = '';
     await nextTick(); initScene(); updateScene();
@@ -133,8 +140,12 @@ async function selectAlgorithm() {
   catch (err) { error.value = err.response?.data?.error || '演算法設定失敗。'; }
 }
 async function selectDeviceAlgorithm() {
+  requestedDeviceAlgorithm.value = selectedDeviceAlgorithm.value;
   try { await api.post('/simulation/config', { fusionAlgorithm: selectedDeviceAlgorithm.value }); }
-  catch (err) { error.value = err.response?.data?.error || '設備融合演算法設定失敗。'; }
+  catch (err) {
+    error.value = err.response?.data?.error || '設備融合演算法設定失敗。';
+    if (!err.response?.data?.fusionAlgorithm) requestedDeviceAlgorithm.value = null;
+  }
 }
 function boxStyle(d) {
   const b = d.bbox, m = frame.value.metadata;
@@ -309,13 +320,18 @@ onUnmounted(() => {
       <aside class="fusion-data-card">
         <h3>UWB + IMU 融合資料</h3>
         <div class="current-position"><strong>融合輸出設備位置</strong><span>{{ devicePositionLabel }}</span></div>
+        <p v-if="deviceLocalization" class="gwo-diagnostics"><strong>4D-GWO</strong><br>
+          共同距離偏差 b：{{ number(deviceLocalization.biasMeters) }} m<br>
+          搜尋範圍：{{ deviceLocalization.biasBounds?.join(' ～ ') || '—' }} m<br>
+          有效基地站：{{ deviceLocalization.validAnchorCount ?? 0 }}；狀態：{{ deviceLocalization.status === 'ready' ? '已定位' : '等待有效距離量測' }}
+        </p>
         <div class="sensor-columns"><div><h4>UWB：8 個基地站距離（m）</h4>
         <div class="uwb-range-grid"><span v-for="i in 8" :key="i">站 {{ i }}：{{ ranges.find(r => r.stationId === i - 1)?.distance?.toFixed(3) ?? '—' }}</span></div>
         <small v-if="!ranges.length">此同幀紀錄未保存基地站原始量測。</small>
         </div><div class="imu-readout"><h4>IMU 即時量測</h4><p>加速度：{{ fmt(sensorTelemetry?.imu?.acceleration) }} m/s²</p><p>角速度：{{ fmt(sensorTelemetry?.imu?.gyroscope) }} °/s</p><p>姿態：Roll {{ number(orientation?.x) }}°、Pitch {{ number(orientation?.y) }}°、Yaw {{ number(orientation?.z) }}°</p></div></div>
         <div v-if="mode === 'history'" class="path-algorithm-menu"><strong>演算法路徑</strong>
           <template v-if="hasDeviceResults"><label v-for="(label, id) in deviceLabels" :key="id" :style="{color: deviceColors[id]}" class="trail-toggle"><input v-model="visibleAlgorithms" :value="id" type="checkbox" @change="updateScene" /><span>{{ label }}</span></label></template>
-          <template v-else><label><input v-model="showPath" type="checkbox" @change="updateScene" /><span>原始設備定位路徑</span></label><small>此紀錄尚無三種演算法結果；需有原始資料才能重算。</small></template>
+          <template v-else><label><input v-model="showPath" type="checkbox" @change="updateScene" /><span>原始設備定位路徑</span></label><small>此紀錄尚無演算法比較結果；需有原始資料才能重算。</small></template>
         </div>
         <label v-else class="path-note">UWB + IMU 融合演算法<select v-model="selectedDeviceAlgorithm" @change="selectDeviceAlgorithm"><option v-for="(label, id) in deviceLabels" :key="id" :value="id">{{ label }}</option></select></label>
         <RouterLink class="calibration-link" to="/settings/camera-extrinsics">設定 RGB-D 相機外參 →</RouterLink>

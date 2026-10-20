@@ -20,7 +20,6 @@ let lastNotificationKey = '';
 let lastNotificationAt = 0;
 let activeOperationId = null;
 const pendingRawWrites = new Set();
-const fusionAlgorithms = ["ekf", "complementary", "weighted_average"];
 export const setActiveTelemetryOperation = (operationId) => { activeOperationId = operationId ? String(operationId) : null; };
 export const beginTelemetryOperation = (operationId) => { resetAllFilters(); setActiveTelemetryOperation(operationId); };
 
@@ -33,6 +32,7 @@ const buildTelemetry = (fusionAlgorithm) => {
     anchorCount: filter.anchorCount,
     uwbRanges: filter.uwbRanges,
     imu: filter.imu,
+    ...(filter.deviceLocalization ? { deviceLocalization: filter.deviceLocalization } : {}),
     updatedAt: new Date().toISOString()
   };
   return { ...telemetry, workspace: getWorkspaceState(telemetry) };
@@ -76,6 +76,9 @@ export const finalizeTelemetryOperation = async (operationId) => {
 export const getSynchronizedDeviceSample = async (operationId) => {
   if (String(operationId) !== activeOperationId) throw new Error('operation is not active');
   const telemetry = getDeviceTelemetry();
+  if (activeAlgorithm() === 'gwo4d' && telemetry.deviceLocalization?.status !== 'ready') {
+    throw new Error('4D-GWO requires at least five valid, geometrically independent UWB anchors');
+  }
   await Promise.all([...pendingRawWrites]);
   return { ...telemetry, fusionAlgorithm: activeAlgorithm(),
     timestampNs: String(BigInt(new Date(telemetry.updatedAt).getTime()) * 1000000n) };

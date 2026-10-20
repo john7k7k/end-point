@@ -58,7 +58,7 @@ def run_screw_detector(color_frame, algorithm):
 
 def fuse_depth(depth_map, center_x, center_y, algorithm):
     """Algorithm dispatch point. Implement each RGB-D fusion method here later."""
-    if algorithm not in {"ekf", "complementary", "weighted_average"}:
+    if algorithm not in {"ekf", "complementary", "weighted_average", "gwo4d"}:
         raise ValueError(f"Unsupported fusion algorithm: {algorithm}")
     return int(depth_map[center_y, center_x][0])
 

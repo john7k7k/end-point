@@ -22,7 +22,7 @@ export const getOperationTelemetry = async (req, res) => {
   const at = Number(req.query.at);
   const filter = { operationId: req.params.operationId };
   if (Number.isFinite(at) && at > 0) filter.timestamp = { $lte: new Date(at) };
-  // Three parallel fusion streams are retained: return up to 80 samples per algorithm.
-  const records = await OperatorTelemetry.find(filter).sort({ timestamp: -1 }).limit(240);
+  // Four parallel streams: retain the same total time window as before.
+  const records = await OperatorTelemetry.find(filter).sort({ timestamp: -1 }).limit(320);
   res.json(records.reverse());
 };

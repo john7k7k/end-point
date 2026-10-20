@@ -1,6 +1,35 @@
 # IMU＋UWB MQTT 交接格式
 
-版本：2026-10-19。依本專案目前程式整理，供 UWB／IMU、人員定位與平台整合組員聯調。
+版本：2026-10-19（實驗室 WSL 區網部署版）。依本專案目前程式整理，供 UWB／IMU、人員定位與平台整合組員聯調。
+
+## 0. 給組員的連線資訊與操作摘要
+
+目前主機是連接 Wi-Fi 的 Windows 電腦，平台執行在該主機的 WSL，MongoDB／Mosquitto 使用 Docker。
+
+| 項目 | 目前使用值 |
+|---|---|
+| 主機 Wi-Fi IPv4 | `192.168.0.156` |
+| MQTT broker host | `192.168.0.156`，不含 mqtt:// 前綴（Python connect 參數） |
+| MQTT port | `1883`，TCP |
+| MQTT 完整 URL | `mqtt://192.168.0.156:1883` |
+| 平台 | `http://192.168.0.156:3000` |
+| 後端識別 | `http://192.168.0.156:3000/api/device/runtime` |
+| 遠端帳號 | 使用這台主機資料庫的帳號 ObjectId；不是發送電腦上的舊帳號 ID |
+| 使用範圍 | 同 Wi-Fi／可互連的實驗室區網；無需公網 IP |
+
+組員先與主機連到可互通的區網，測通1883，再依第3、4節送原始 UWB／IMU。由一個操作控制端建立作業、等待 ACK 後開始量測；其他感測／相機程式沿用該作業，**不要每個裝置都各自發一次 operation/start**。
+
+如果完整測試由 test2 控制，先在發送電腦執行：
+
+```powershell
+python .\AI\test\test2.py --server 192.168.0.156 --user-id 貼上遠端帳號ID --rgbd
+```
+
+看到 Using backend 與 Subscribed 後輸入 s；感測端在操作已開始後持續發送 UWB／IMU；e 停止，q 退出。此命令的 --user-id placeholder 必須替換。
+
+只有 UWB／IMU 發送端不需要安裝 FFmpeg、MediaMTX 或相機驅動；只有同時執行 test2／影像發送時才需要這些影像端依賴。test2 使用配對測試影片與示範深度，並非真實感測器驅動。
+
+主機 IP 可能因 DHCP 改變；交接前用 Windows ipconfig 確認 Wi-Fi IPv4，建議請網管設定 DHCP 保留位址。不要把 WSL 的172.x虛擬位址或邊緣端自己的 localhost 當 broker host。
 
 ## 1. 分工與兩種輸入
 
@@ -19,7 +48,7 @@
 
 | 項目 | 設定 |
 |---|---|
-| Broker | `mqtt://<伺服器可連線位址>:1883` |
+| Broker | `mqtt://192.168.0.156:1883`（主機IP變更時同步更新） |
 | 訊息編碼 | UTF-8 JSON object |
 | 感測資料 QoS | 1 |
 | 操作開始／結束 QoS | 2 |
@@ -37,7 +66,91 @@
 
 後端預設連到 `mqtt://localhost:1883`，可用 `MQTT_URL` 環境變數指定完整 broker URL。邊緣端的 localhost 指邊緣端自己，不能直接照抄為伺服器位址。
 
-目前 Docker 設定只把 1883 綁定 `127.0.0.1`，外部硬體不能直接連；跨機聯調時需另行設定可達的 broker 位址、認證與網路通路。
+目前 Docker Compose 仍將1883綁定 `127.0.0.1`；本次區網部署透過**主機 Windows portproxy＋防火牆規則**把 Wi-Fi 位址的連線轉給這個本機埠。只執行 compose up 不會自動建立區網通路。
+
+### 2.1 哪些連接埠需要開放
+
+| 發送工作 | 需要連到主機的埠 |
+|---|---|
+| 已有作業下只發原始 UWB／IMU MQTT | 1883/TCP |
+| 操作程式透過 HTTP 取得 backendInstanceId | 另需3000/TCP |
+| 執行 test2 --rgbd 完整影像測試 | 1883、3000、8000、8554/TCP |
+| 只發 MQTT vision/device/pose | MQTT走1883；AI8000由主機後端內部連線，但相機端仍需自己的影像通路 |
+
+**感測設備不需要直接連 MongoDB 27017。** 相機上傳8000與RTSP8554不是純原始感測資料傳輸必需的埠。完整影像連線請另參考 `REMOTE_TEST2.md` 與 `EDGE_RGBD_HANDOVER.md`。
+
+### 2.2 主機端設定（在192.168.0.156上操作）
+
+主機 WSL 的專案目錄啟動服務：
+
+```bash
+docker compose -f deploy/compose.infra.yml up -d
+bash start-system.sh --check
+bash start-system.sh
+```
+
+若應用已執行，不要重複 start；查 `bash start-system.sh -status`，需要重啟時先退出 test2，再用 -reboot。
+
+主機 Windows PowerShell 先確認本機埠：
+
+```powershell
+Test-NetConnection 127.0.0.1 -Port 1883
+Test-NetConnection 127.0.0.1 -Port 3000
+```
+
+兩者可達後，在**主機系統管理員 PowerShell**設定區網轉送；若已設定完成，先查看，不必重複新增：
+
+```powershell
+netsh interface portproxy show all
+Get-NetFirewallRule -Name 'Endpoint-LAN-MQTT-Web' -ErrorAction SilentlyContinue
+```
+
+尚未設定時：
+
+```powershell
+Start-Service iphlpsvc
+netsh interface portproxy add v4tov4 listenaddress=192.168.0.156 listenport=1883 connectaddress=127.0.0.1 connectport=1883
+netsh interface portproxy add v4tov4 listenaddress=192.168.0.156 listenport=3000 connectaddress=127.0.0.1 connectport=3000
+New-NetFirewallRule -Name 'Endpoint-LAN-MQTT-Web' -DisplayName 'Endpoint LAN MQTT and Web' -Direction Inbound -Action Allow -Protocol TCP -LocalAddress 192.168.0.156 -LocalPort 1883,3000 -RemoteAddress LocalSubnet -Profile Any
+```
+
+設定後從組員電腦測試，而不是只在主機測：
+
+```powershell
+Test-NetConnection 192.168.0.156 -Port 1883
+Test-NetConnection 192.168.0.156 -Port 3000
+```
+
+預期 TcpTestSucceeded=True。若主機本機通、組員電腦不通，檢查 portproxy、防火牆或 Wi-Fi 用戶端隔離；若主機本機也不通，先檢查容器／應用狀態。TCP測通後仍需驗證 MQTT CONNECT／發布是否成功。
+
+目前專案 Mosquitto 為匿名區網測試設定，這些規則只限定本機子網路，不應用作公網部署。若伺服器之後設定帳密，需一起交付 username／password／TLS要求並更新發送端；不要自行關閉憑證驗證。
+
+### 2.3 查遠端帳號、觀察收訊與資料
+
+在主機 WSL 專案目錄查帳號：
+
+```bash
+docker compose -f deploy/compose.infra.yml exec -T mongodb \
+  mongosh vision_system --quiet \
+  --eval 'db.users.find({}, {_id:1, username:1, name:1}).toArray()'
+```
+
+若是空陣列，先到 `http://192.168.0.156:3000` 註冊帳戶。
+
+主機監看收到的原始 topic：
+
+```bash
+docker compose -f deploy/compose.infra.yml exec mqtt \
+  mosquitto_sub -h 127.0.0.1 -t 'vision/uwb/ranges' -t 'vision/imu/data' -v
+```
+
+另一個終端查看應用紀錄：
+
+```bash
+tail -f runtime/linux/backend.log
+```
+
+Ctrl+C只停止監看，不停止broker或後端。監看有訊息只能證明broker收到；還要確認資料庫有本次作業的 raw 紀錄，才能確認應用接受並保存。
 
 ## 3. UWB 距離格式：`vision/uwb/ranges`
 
@@ -166,7 +279,7 @@
 ### 開始順序
 
 1. 在平台建立使用者，取得其 MongoDB `_id`（24 位十六進位字串）。
-2. 若要鎖定特定後端，HTTP GET `http://<後端>:3000/api/device/runtime` 取得 backendInstanceId。
+2. HTTP GET `http://192.168.0.156:3000/api/device/runtime` 取得 backendInstanceId，鎖定此次目標後端。
 3. 先訂閱 `vision/operation/ack/<userId>`，再送開始訊息。
 
 Topic：`vision/operation/start`，QoS 2，retain=false。
@@ -180,6 +293,8 @@ Topic：`vision/operation/start`，QoS 2，retain=false。
 ```
 
 backendInstanceId 與 requestId 為選用欄位，但測試工具會使用它們，避免 Windows／WSL 共用 broker 時接到另一套後端的 ACK。backendInstanceId 每次後端啟動會變，不能永久寫死。requestId 目前用於回覆配對，**後端尚未以它對 start 去重**，因此不要重複發送 start 來重試。
+
+本次聯調要求操作控制程式帶上這兩欄，並只接受兩欄都符合的 ACK。若使用 test2，程式會自動取得並檢查，不需要人工複製 backendInstanceId。感測器驅動不必重複建立作業。
 
 後端接受操作並成功通知 AI 後才回覆：
 
@@ -209,6 +324,10 @@ ACK 表示作業已建立且 AI 接受該 operation，不代表第一幀已到�
 
 `endTime` 為 ISO 8601 UTC。後端結束作業、用原始資料重算設備定位歷史，並通知 AI 結束。現在沒有「全部重算及封裝完成」的 MQTT ACK；publish 完成只代表 broker 交付，不等於歷史結果已全部就緒。
 
+### 只測原始 UWB／IMU時的生命週期限制
+
+目前仍以影像操作為主。沒有影像時，AI的起始等待／斷流規則可能自動結束操作；尚未新增可獨立長時間執行的「純感測器錄製模式」。因此只發原始資料可做短時間介面測試；完整聯調請同步啟動影像流程，或先實作獨立感測器模式後再做長時間量測。原始資料只有在啟用作業存在時才保存，不能只看broker有收到就認為資料庫會一直記錄。
+
 ## 7. 時間、頻率與資料品質約定
 
 | 項目 | 交接約定 |
@@ -235,7 +354,7 @@ import json
 import time
 import paho.mqtt.client as mqtt
 
-BROKER = "127.0.0.1"  # 換成實際可達的 broker；本機聯調才用此值
+BROKER = "192.168.0.156"  # 主機的Wi-Fi IPv4；不是本機localhost
 client = mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION2)
 client.connect(BROKER, 1883, 60)
 client.loop_start()
@@ -266,6 +385,44 @@ finally:
 
 原始訊息目前沒有應用層 accepted ACK；請同時檢查伺服器日誌、RawSensorMeasurement 與畫面，不能只以 publish 成功驗收。
 
+組員端安裝套件：
+
+```bash
+python -m pip install "paho-mqtt>=2,<3"
+```
+
+上面的程式一次發送一組範例數值，用於驗證格式；真實設備需改成硬體讀值並持續按量測頻率發送。IMU與UWB各保留自己的實際量測時間，不要只是為了看起來同步，把兩種不同時間的讀值都改成同一個發送時刻。
+
+## 8.1 發送端與主機端各要執行什麼
+
+| 機器 | 要執行 | 不需要執行 |
+|---|---|---|
+| 192.168.0.156主機 | Docker MongoDB／MQTT、平台後端、AI、需要時的MediaMTX | 不要另外開第二個 test2 搶同一作業 |
+| 組員原始感測設備 | 感測器驅動、MQTT client、正確單位與時間戳 | Node平台、MongoDB、AI推論服務 |
+| 影像／test2發送電腦 | 相機發送器，或Python＋FFmpeg＋測試影片 | 本機另一套平台後端／broker |
+
+跨機 test2 指令：
+
+```powershell
+python .\AI\test\test2.py --server 192.168.0.156 --user-id 貼上遠端帳號ID --rgbd
+```
+
+若組員自行實作操作開始控制，就由該控制程式開始作業；不要再讓 test2 同時建立另一筆。需要影像端沿用既有 operationId 時，可依影像交接文件使用獨立發送器。
+
+## 8.2 常見問題速查
+
+| 現象 | 檢查 |
+|---|---|
+| 連不到192.168.0.156:1883 | Wi-Fi是否互通、主機IP、1883轉送／防火牆、Docker MQTT是否Up |
+| 網站可以開，但test2影像失敗 | 另外檢查8000／8554；只有1883／3000不夠 |
+| User not found／ObjectId CastError | 使用遠端資料庫的24位帳號ID，不是username |
+| operation not ready／pose HTTP409 | ACK是否與目標backendInstanceId／requestId相符；操作是否結束；Windows與WSL是否重複開平台 |
+| MQTT看得到但raw資料沒有 | 後端是否啟用作業、欄位格式、應用log；publish成功不等於DB保存 |
+| 八站資料不完整／模擬值混入 | 確認兩個raw topics都持續到達，並檢查目前fallback限制 |
+| 設備持續漂移或高度不合理 | acceleration重力／座標、角速度單位、基站ID與座標 |
+| pose被拒絕 | hello是否完成、operation/session/clock是否一致、時間戳是否遞增 |
+| 換Wi-Fi或重啟後突然不能連 | 重查主機IP、Docker／WSL服務、Windowsportproxy與防火牆 |
+
 ## 9. 組員需要交付與聯調驗收
 
 請交付：
@@ -276,6 +433,8 @@ finally:
 - 四元數方向、順序、座標手性；設備到世界的旋轉定義。
 - 若演算法在伺服器執行：程式、依賴版本、初始化方式、單步輸入／輸出、重設方式及可重播範例。
 - 相機、IMU、UWB 的時鐘來源與偏移校正方式。
+
+正式接線前先共同填寫：broker位址、使用者ID、誰控制操作開始／結束、八站對照表、IMU座標／單位、時間來源，以及選A原始輸入或B已融合姿態。先用錄製資料驗證，再換即時硬體。
 
 先做三個動作驗收：靜止時加速度接近 0；只旋轉時設備位置不應大幅移動；沿世界 +X／+Y 移動時，位置與姿態方向應符合定義。再檢查八站數值、原始資料筆數、操作結束後三種 Telemetry，以及歷史暫停時資料是否同步停止。
 
@@ -288,5 +447,8 @@ finally:
 - `AI/rgbd_api.py`：session／clock 檢查與姿態接收。
 - `AI/rgbd_sync.py`：時間插值、四元數、姿態來源時間。
 - `AI/test/test2.py`：操作開始 ACK 配對範例。
+- `REMOTE_TEST2.md`：發送電腦→192.168.0.156主機的四個埠與啟動流程。
+- `EDGE_RGBD_HANDOVER.md`：相機影像、同幀封包與姿態對時。
+- `WSL_DEPLOYMENT_COMMANDS.md`：主機部署、啟停、日誌與資料庫指令。
 
 本文只定義目前可接的資料與必要交接約定；新增多設備、序號去重、斷線降級或外部人員定位演算法時，需同步更新程式與契約。

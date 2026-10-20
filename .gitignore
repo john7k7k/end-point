@@ -16,6 +16,9 @@ AI/**/__pycache__/
 runtime/
 # Local presentation authoring runtime cache
 .cache/
+.codex-build/
+# Office editing lock files are local-only
+~$*
 .venv/
 .tools/
 scripts/__pycache__/

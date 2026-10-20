@@ -5,6 +5,10 @@ import sys
 import time
 import uuid
 import requests
+import argparse
+import socket
+import shutil
+from urllib.parse import urlparse
 from pathlib import Path
 
 import paho.mqtt.client as mqtt
@@ -25,8 +29,37 @@ rgbd_process = None
 RGBD_ENABLED = '--rgbd' in sys.argv
 active_operation_id = None
 BACKEND_URL = os.environ.get('BACKEND_URL', 'http://127.0.0.1:3000').rstrip('/')
+RGBD_URL = 'ws://127.0.0.1:8000/ws/rgbd'
+RTSP_BASE_URL = 'rtsp://127.0.0.1:8554'
 backend_instance_id = None
 pending_request_id = None
+
+
+def configure_remote(args):
+    global MQTT_BROKER, MQTT_PORT, BACKEND_URL, RGBD_URL, RTSP_BASE_URL, USER_ID, TOPIC_ACK, RGBD_ENABLED
+    host = args.server
+    if not host or '/' in host or ':' in host:
+        raise ValueError('--server must be an IPv4 address or hostname without a scheme/port')
+    MQTT_BROKER, MQTT_PORT = host, args.mqtt_port
+    BACKEND_URL = (args.backend or f'http://{host}:3000').rstrip('/')
+    RGBD_URL = args.rgbd_url or f'ws://{host}:8000/ws/rgbd'
+    RTSP_BASE_URL = (args.rtsp_base or f'rtsp://{host}:8554').rstrip('/')
+    USER_ID = args.user_id
+    TOPIC_ACK = f'vision/operation/ack/{USER_ID}'
+    RGBD_ENABLED = args.rgbd
+
+
+def check_upload_ports():
+    urls = [('RTSP', RTSP_BASE_URL, 8554)]
+    if RGBD_ENABLED:
+        urls.append(('RGB-D WebSocket', RGBD_URL, 8000))
+    for label, url, default_port in urls:
+        parsed = urlparse(url)
+        try:
+            with socket.create_connection((parsed.hostname, parsed.port or default_port), timeout=3):
+                pass
+        except OSError as error:
+            raise RuntimeError(f'{label} unreachable: {url}. Open/forward this port on the server before starting test2.') from error
 
 
 def stream_command(video_path, destination):
@@ -41,18 +74,19 @@ def start_streams():
     if color_process or depth_process:
         return
     color_process = subprocess.Popen(
-        stream_command(COLOR_VIDEO, "rtsp://localhost:8554/cam-color"),
+        stream_command(COLOR_VIDEO, f'{RTSP_BASE_URL}/cam-color'),
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
     depth_process = subprocess.Popen(
-        stream_command(DEPTH_VIDEO, "rtsp://localhost:8554/cam-depth"),
+        stream_command(DEPTH_VIDEO, f'{RTSP_BASE_URL}/cam-depth'),
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
     print("Started cam-color and cam-depth streams")
     if RGBD_ENABLED:
         rgbd_process = subprocess.Popen([
             sys.executable, str(BASE_DIR / 'rgbd_sender.py'), '--operation-id', active_operation_id,
-            '--backend', BACKEND_URL, '--color', str(COLOR_VIDEO), '--depth', str(DEPTH_VIDEO), '--controlled'
+            '--backend', BACKEND_URL, '--url', RGBD_URL,
+            '--color', str(COLOR_VIDEO), '--depth', str(DEPTH_VIDEO), '--controlled'
         ], stdin=subprocess.PIPE)
 
 
@@ -111,14 +145,32 @@ def publish_end(client, reason):
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description='Publish local test videos to a local or remote platform.')
+    parser.add_argument('--server', default=os.environ.get('SERVER_HOST', '127.0.0.1'), help='Server IPv4/hostname; sets all four services')
+    parser.add_argument('--user-id', default=USER_ID, help='User ObjectId from the SERVER database')
+    parser.add_argument('--rgbd', action='store_true')
+    parser.add_argument('--mqtt-port', type=int, default=1883)
+    parser.add_argument('--backend', help='Override backend HTTP base URL')
+    parser.add_argument('--rgbd-url', help='Override RGB-D WebSocket URL')
+    parser.add_argument('--rtsp-base', help='Override RTSP base URL')
+    options = parser.parse_args()
+    if not 1 <= options.mqtt_port <= 65535:
+        parser.error('--mqtt-port must be 1..65535')
+    if len(options.user_id) != 24 or any(c not in '0123456789abcdef' for c in options.user_id):
+        parser.error('--user-id must be the real 24-character ObjectId from the server database')
+    configure_remote(options)
+    if not shutil.which('ffmpeg'):
+        raise RuntimeError('ffmpeg must be installed on this sending computer')
     if not COLOR_VIDEO.exists() or not DEPTH_VIDEO.exists():
         raise FileNotFoundError("Run the video split step first: test_color.mp4 and test_depth.mp4 are required.")
 
+    check_upload_ports()
     response = requests.get(f'{BACKEND_URL}/api/device/runtime', timeout=10)
     if response.status_code != 200:
         raise RuntimeError('Backend lacks runtime identification. Restart the updated backend before test2.')
     backend_instance_id = response.json()['backendInstanceId']
     print(f'Using backend {BACKEND_URL} ({backend_instance_id})', flush=True)
+    print(f'MQTT {MQTT_BROKER}:{MQTT_PORT}; RTSP {RTSP_BASE_URL}; RGB-D {RGBD_URL}', flush=True)
     client = mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION2)
     client.on_connect = on_connect
     client.on_message = on_message
