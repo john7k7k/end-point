@@ -14,7 +14,8 @@ class AckTests(unittest.TestCase):
                 backend=None, rgbd_url=None, rtsp_base=None, user_id='a'*24,rgbd=True))
             self.assertEqual(test2.MQTT_BROKER,'192.168.0.156')
             self.assertEqual(test2.TOPIC_ACK,'vision/operation/ack/'+'a'*24)
-            with patch.object(test2.subprocess,'Popen') as popen:
+            with patch.object(test2.subprocess,'Popen') as popen, \
+                    patch.object(test2, 'prepare_short_gop', side_effect=lambda source: source):
                 test2.start_streams()
                 commands=[call.args[0] for call in popen.call_args_list]
                 self.assertEqual(commands[0][-1],'rtsp://192.168.0.156:8554/cam-color')

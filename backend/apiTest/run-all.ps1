@@ -48,6 +48,9 @@ const https = require('node:https');
 const net = require('node:net');
 const {spawn,spawnSync,execFile} = require('node:child_process');
 const {randomUUID,randomBytes} = require('node:crypto');
+const os = require('node:os');
+const {pipeline} = require('node:stream/promises');
+const {Transform} = require('node:stream');
 const [root,server,secondsText,python,colorArg,depthArg,encodeText] = process.argv.slice(2);
 const color=colorArg==='-'?'':colorArg,depth=depthArg==='-'?'':depthArg;
 if(!/^[a-zA-Z0-9][a-zA-Z0-9.-]*$/.test(server)) throw new Error('Invalid server hostname');
@@ -268,22 +271,46 @@ function probeStream(url) {
       resolve(stream);
     }));
 }
-async function probeRecording(url) {
-  // Fetch with the same checkpoint headers as the other HTTP cases. Feed the
-  // bytes on stdin so the admin token never appears in ffprobe's command line.
-  const response=await request('GET',url,undefined,30000);
-  check(response.status===200&&Buffer.isBuffer(response.body),'Recorded MP4 download failed: HTTP '+response.status);
-  return new Promise((resolve,reject)=>{
-    const process=execFile('ffprobe',['-v','error',
-    '-show_entries','stream=codec_name,width,height,duration:format=duration,size','-of','json','pipe:0'],
-    {timeout:9000,windowsHide:true},(error,stdout,stderr)=>{
-      if(error)return reject(new Error('Recorded MP4 unreadable: '+String(stderr||error.message).slice(0,180)));
-      const result=JSON.parse(stdout),duration=Number(result.format?.duration);
-      if(!result.streams?.[0]?.width||!(duration>0))return reject(new Error('Recorded MP4 has no playable video/duration'));
-      resolve({durationSeconds:duration,sizeBytes:response.bytes,...result.streams[0]});
-    });
-    process.stdin.on('error',()=>{});process.stdin.end(response.body);
+async function downloadRecording(url,destination) {
+  const parsed=new URL(url),transport=parsed.protocol==='https:'?https:http;
+  const headers=checkpoint?{Authorization:'Bearer '+process.env.API_TEST_ADMIN_TOKEN,'X-API-Test-Checkpoint':checkpoint}:{};
+  const signal=AbortSignal.timeout(120000),maximum=2*1024**3;
+  const response=await new Promise((resolve,reject)=>{
+    const req=transport.get(parsed,{agent:false,headers,signal},resolve);
+    req.setTimeout(30000,()=>req.destroy(new Error('Recording download idle timeout')));
+    req.on('error',reject);
   });
+  if(response.statusCode!==200){response.destroy();throw new Error('Recorded MP4 download failed: HTTP '+response.statusCode);}
+  if(Number(response.headers['content-length'])>maximum){response.destroy();throw new Error('Recording exceeds 2 GiB disk safety limit');}
+  let bytes=0;
+  const counter=new Transform({transform(chunk,_encoding,done){
+    bytes+=chunk.length;
+    done(bytes>maximum?new Error('Recording exceeds 2 GiB disk safety limit'):null,chunk);
+  }});
+  // pipeline handles backpressure, socket truncation and disk write failures.
+  await pipeline(response,counter,fs.createWriteStream(destination,{flags:'wx'}),{signal});
+  check(bytes>0,'Recorded MP4 download is empty');
+  return bytes;
+}
+async function probeRecording(url) {
+  const temporary=await fs.promises.mkdtemp(path.join(os.tmpdir(),'vision-api-video-'));
+  const filename=path.join(temporary,'recording.mp4');
+  try {
+    const bytes=await downloadRecording(url,filename);
+    return await new Promise((resolve,reject)=>execFile('ffprobe',['-v','error',
+      '-show_entries','stream=codec_name,width,height,duration:format=duration,size','-of','json',filename],
+      {timeout:30000,windowsHide:true},(error,stdout,stderr)=>{
+        if(error)return reject(new Error('Recorded MP4 unreadable: '+String(stderr||error.message).slice(0,180)));
+        try{
+          const result=JSON.parse(stdout),duration=Number(result.format?.duration);
+          check(result.streams?.[0]?.width&&duration>0,'Recorded MP4 has no playable video/duration');
+          resolve({durationSeconds:duration,sizeBytes:bytes,...result.streams[0]});
+        }catch(problem){reject(problem);}
+      }));
+  } finally {
+    // Only the unique folder created above; never any server archive directory.
+    await fs.promises.rm(temporary,{recursive:true,force:true,maxRetries:10,retryDelay:100});
+  }
 }
 const sourceArgs=['-u',path.join(folder,'rtsp_publish.py'),'--host',server,'--seconds',String(seconds)];
 if(color)sourceArgs.push('--color',color);if(depth)sourceArgs.push('--depth',depth);if(encode)sourceArgs.push('--encode');
@@ -309,7 +336,7 @@ async function main() {
   check(!aiStatus.connected&&!aiStatus.operationId,'AI already owns an operation/session');
   await idle();
   const dry=spawnSync(python,[...sourceArgs,'--dry-run'],{cwd:root,encoding:'utf8',windowsHide:true,
-    timeout:45000,env:{...process.env,PYTHONUTF8:'1',PYTHONDONTWRITEBYTECODE:'1'}});
+    timeout:600000,env:{...process.env,PYTHONUTF8:'1',PYTHONDONTWRITEBYTECODE:'1'}});
   check(dry.status===0,'RTSP source check failed: '+(dry.stderr||dry.error?.message||dry.stdout));
   record('RTSP local source/codec preflight');
   const saved=await manager('checkpoints','POST',{clientRunId:runId,backendInstanceId:vars.backendInstanceId});

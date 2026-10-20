@@ -1,8 +1,16 @@
 import cv2
+import os
 import numpy as np
 
+# Set before VideoCapture.open (CAP_PROP_BUFFERSIZE after open does not reduce
+# FFmpeg's initial stream-information probe). Deployment may override these.
+os.environ.setdefault('OPENCV_FFMPEG_CAPTURE_OPTIONS',
+                      'rtsp_transport;tcp|analyzeduration;100000|probesize;32768')
+
 def get_stream(url):
-    cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
+    cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG,
+                           [cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 3000,
+                            cv2.CAP_PROP_READ_TIMEOUT_MSEC, 5000])
     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
     return cap
 

@@ -14,8 +14,8 @@
 @base = http://{{host}}:3000
 @api = {{base}}/api
 @ai = http://{{host}}:8000
-@email = api-demo@example.com
-@password = ExampleOnly-ChangeMe123!
+@email = ppp1244qqq@gmail.com
+@password = 777266794
 @userId = {{login.response.body.$.user.id}}
 @operationId = {{startOperation.response.body.$.operationId}}
 @detectionId = 000000000000000000000000

@@ -14,6 +14,8 @@ from pathlib import Path
 import paho.mqtt.client as mqtt
 
 BASE_DIR = Path(__file__).parent
+sys.path.insert(0, str(BASE_DIR.resolve().parent))
+from stream_sources import prepare_short_gop
 COLOR_VIDEO = BASE_DIR / "test_color.mp4"
 DEPTH_VIDEO = BASE_DIR / "test_depth.mp4"
 MQTT_BROKER = "localhost"
@@ -73,12 +75,14 @@ def start_streams():
     global color_process, depth_process, rgbd_process
     if color_process or depth_process:
         return
+    color_source = prepare_short_gop(COLOR_VIDEO)
+    depth_source = prepare_short_gop(DEPTH_VIDEO)
     color_process = subprocess.Popen(
-        stream_command(COLOR_VIDEO, f'{RTSP_BASE_URL}/cam-color'),
+        stream_command(color_source, f'{RTSP_BASE_URL}/cam-color'),
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
     depth_process = subprocess.Popen(
-        stream_command(DEPTH_VIDEO, f'{RTSP_BASE_URL}/cam-depth'),
+        stream_command(depth_source, f'{RTSP_BASE_URL}/cam-depth'),
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
     print("Started cam-color and cam-depth streams")

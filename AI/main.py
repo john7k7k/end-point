@@ -11,10 +11,11 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
 import maintenance
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from detector import detect
 from rtsp_stream import get_dual_stream
+from archive_recorder import ArchiveRecorder
 from sender import get_current_operation, send_result, set_current_operation
 from rgbd_api import router as rgbd_router, receiver as rgbd_receiver, recovery_worker, ROOT as rgbd_root
 
@@ -43,7 +44,7 @@ simulation_config = {
 
 
 class OperationUpdate(BaseModel):
-    opID: str
+    opID: str = Field(pattern=r'^[0-9a-f]{24}$')
 
 
 class SimulationConfig(BaseModel):
@@ -103,46 +104,33 @@ def stop_video_writer(writer):
 
 
 def start_archive_recorder(source_url, destination):
-    final_path = Path(destination)
-    temporary_path = final_path.with_suffix(".mkv")
-    process = subprocess.Popen(
-        ["ffmpeg", "-y", "-rtsp_transport", "tcp", "-i", source_url, "-c:v", "copy", "-an", "-f", "matroska", str(temporary_path)],
-        stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
-    return {"process": process, "temporary": temporary_path, "final": final_path}
+    return ArchiveRecorder(source_url, destination)
 
 
 def _stop_archive_recorders():
     global archive_recorders
     for recorder in archive_recorders:
-        process = recorder["process"]
-        if process.poll() is None:
-            try:
-                process.stdin.write(b"q\n")
-                process.stdin.flush()
-                process.stdin.close()
-                process.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                process.terminate()
-                try:
-                    process.wait(timeout=3)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-            except (BrokenPipeError, OSError, ValueError):
-                pass
-        if recorder["temporary"].exists():
-            result = subprocess.run(
-                ["ffmpeg", "-y", "-i", str(recorder["temporary"]), "-c:v", "copy", "-an", "-movflags", "+faststart", str(recorder["final"])],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            )
-            if result.returncode == 0:
-                recorder["temporary"].unlink()
+        recorder.request_stop()
+    for recorder in archive_recorders:
+        recorder.finish()
     archive_recorders = []
 
 
 def stop_archive_recorders():
     with archive_lock:
         _stop_archive_recorders()
+
+
+def ensure_archive_recorders():
+    """Called by a separate task, never gated on OpenCV or detector throughput."""
+    global archive_recorders
+    with archive_lock:
+        if current_video_filenames and not archive_recorders and maintenance.can_write(current_operation_id):
+            archive_recorders = [
+                start_archive_recorder(COLOR_RTSP_URL, Path(__file__).parent / 'video' / current_video_filenames['color']),
+                start_archive_recorder(DEPTH_RTSP_URL, Path(__file__).parent / 'video' / current_video_filenames['depth']),
+            ]
+            print('Independent RTSP recorders armed (waiting/retrying for publishers)', flush=True)
 
 
 def end_active_operation(reason):
@@ -183,13 +171,6 @@ def process_stream():
             if current_operation_id:
                 operation_received_frame = True
             lost_count = 0
-            with archive_lock:
-                if current_video_filenames and not archive_recorders and maintenance.can_write(current_operation_id):
-                    archive_recorders = [
-                        start_archive_recorder(COLOR_RTSP_URL, f"video/{current_video_filenames['color']}"),
-                        start_archive_recorder(DEPTH_RTSP_URL, f"video/{current_video_filenames['depth']}"),
-                    ]
-                    print("Started direct RTSP archive recording")
             config = simulation_config.copy()
             result = detect(
                 frame,
@@ -206,7 +187,6 @@ def process_stream():
                 time.sleep(0.1)
                 continue
 
-            stop_archive_recorders()
             if (not rgbd_receiver.connected and operation_received_frame):
                 end_active_operation(f"Stream disconnected for {STREAM_END_TIMEOUT_SECONDS} seconds")
 
@@ -228,11 +208,16 @@ async def lifespan(_app: FastAPI):
         print("No active operation found; waiting for an operation update.")
     thread = threading.Thread(target=process_stream, daemon=True)
     thread.start()
+    async def archive_watchdog():
+        while True:
+            ensure_archive_recorders()
+            await asyncio.sleep(.1)
+    recording = asyncio.create_task(archive_watchdog())
     async def paired_watchdog():
         while True:
             await asyncio.sleep(1)
             if (current_operation_id and operation_started_at is not None
-                    and not operation_received_frame and not rgbd_receiver.last_packet_at
+                    and not operation_received_frame and not any(recorder.has_frames for recorder in archive_recorders) and not rgbd_receiver.last_packet_at
                     and time.monotonic() - operation_started_at > STREAM_START_TIMEOUT_SECONDS):
                 await asyncio.to_thread(end_active_operation, 'No first frame within 120 seconds')
                 if not current_operation_id:
@@ -245,6 +230,12 @@ async def lifespan(_app: FastAPI):
     watchdog = asyncio.create_task(paired_watchdog())
     recovery = asyncio.create_task(recovery_worker())
     yield
+    recording.cancel()
+    try:
+        await recording
+    except asyncio.CancelledError:
+        pass
+    await receive_operation_end()
     recovery.cancel()
     try:
         await recovery
@@ -324,6 +315,8 @@ async def receive_simulation_config(config: SimulationConfig):
 async def receive_operation_update(update: OperationUpdate):
     global current_video_filenames, current_operation_id, archive_recorders
     global operation_started_at, operation_received_frame
+    if current_operation_id == update.opID and current_video_filenames:
+        return {"status": "success", "opID": update.opID}
     operation_started_at = time.monotonic()
     operation_received_frame = False
     if maintenance.lease:

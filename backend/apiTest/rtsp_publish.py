@@ -10,7 +10,9 @@
 預設來源為 AI/test/test_color.mp4、AI/test/test_depth.mp4（影片不在 Git 內，需自行備妥）。
 預設主機 192.168.0.156，路徑 cam-color、cam-depth，兩路均用 RTSP-over-TCP。
 
-預設不轉碼，直接 copy H264。若來源含 B-frame／非 H264／非 8-bit 420，會拒絕並提示
+預設發布時直接 copy H264。來源 GOP 超過約 1 秒時，先一次性建立 CRF 16 的短 GOP
+快取（runtime/stream-cache），不覆蓋原檔；快取編碼不是數學無損，之後不重複編碼。
+若來源含 B-frame／非 H264／非 8-bit 420，會拒絕並提示
 --encode。此選項以 libx264、CRF 18、無 B-frame 轉碼，會增加負載且不是無損壓縮。
 來源兩檔必須已拆分，不會把上下拼接影片當作兩路。
 
@@ -37,6 +39,8 @@ import sys
 import time
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / 'AI'))
+from stream_sources import prepare_short_gop
 
 
 def parser():
@@ -85,8 +89,9 @@ def command(source, url, options, executable='ffmpeg'):
         args += ['-stream_loop', '-1']
     args += ['-i', str(source), '-map', '0:v:0', '-an']
     if options.encode:
+        fps = 30  # The live encode mode explicitly uses 30 FPS / one-second GOP.
         args += ['-c:v', 'libx264', '-preset', 'veryfast', '-tune', 'zerolatency',
-                 '-crf', '18', '-bf', '0', '-g', '30', '-pix_fmt', 'yuv420p',
+                 '-crf', '18', '-bf', '0', '-r', str(fps), '-g', str(fps), '-keyint_min', str(fps), '-sc_threshold', '0', '-pix_fmt', 'yuv420p',
                  '-vf', 'pad=ceil(iw/2)*2:ceil(ih/2)*2']
     else:
         args += ['-c:v', 'copy']
@@ -126,7 +131,8 @@ def run(options):
         if not options.encode and not safe:
             raise ValueError(f'{label} 不符合瀏覽器直送條件：{info}。改用 --encode，或先準備 H264 無 B-frame 檔案。')
         url = f'rtsp://{options.host}:{options.port}/{destination}'
-        args = command(source.resolve(), url, options, ffmpeg)
+        prepared = source.resolve() if options.encode else prepare_short_gop(source, ffmpeg, ffprobe)
+        args = command(prepared, url, options, ffmpeg)
         printable = subprocess.list2cmdline(args) if os.name == 'nt' else shlex.join(args)
         print(f'{label}: {info}\n{printable}', flush=True)
         commands.append(args)
