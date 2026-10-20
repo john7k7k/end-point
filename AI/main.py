@@ -1,4 +1,5 @@
 import cv2
+import os
 import asyncio
 import subprocess
 import threading
@@ -7,13 +8,15 @@ import requests
 from pathlib import Path
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, HTTPException
+from fastapi.responses import JSONResponse
+import maintenance
 from pydantic import BaseModel
 
 from detector import detect
 from rtsp_stream import get_dual_stream
 from sender import get_current_operation, send_result, set_current_operation
-from rgbd_api import router as rgbd_router, receiver as rgbd_receiver, recovery_worker
+from rgbd_api import router as rgbd_router, receiver as rgbd_receiver, recovery_worker, ROOT as rgbd_root
 
 # Some OpenCV builds omit this optional logging API.
 if hasattr(cv2, "setLogLevel"):
@@ -24,6 +27,7 @@ cap = None
 current_video_filenames = None
 current_operation_id = None
 archive_recorders = []
+archive_lock = threading.RLock()
 STREAM_END_TIMEOUT_SECONDS = 10
 STREAM_START_TIMEOUT_SECONDS = 120
 operation_started_at = None
@@ -108,7 +112,7 @@ def start_archive_recorder(source_url, destination):
     return {"process": process, "temporary": temporary_path, "final": final_path}
 
 
-def stop_archive_recorders():
+def _stop_archive_recorders():
     global archive_recorders
     for recorder in archive_recorders:
         process = recorder["process"]
@@ -136,6 +140,11 @@ def stop_archive_recorders():
     archive_recorders = []
 
 
+def stop_archive_recorders():
+    with archive_lock:
+        _stop_archive_recorders()
+
+
 def end_active_operation(reason):
     global current_operation_id, current_video_filenames
     if not current_operation_id:
@@ -148,6 +157,7 @@ def end_active_operation(reason):
                 "endTime": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 "description": reason,
             },
+            headers=maintenance.headers(),
             timeout=3,
         )
         response.raise_for_status()
@@ -173,12 +183,13 @@ def process_stream():
             if current_operation_id:
                 operation_received_frame = True
             lost_count = 0
-            if current_video_filenames and not archive_recorders:
-                archive_recorders = [
-                    start_archive_recorder(COLOR_RTSP_URL, f"video/{current_video_filenames['color']}"),
-                    start_archive_recorder(DEPTH_RTSP_URL, f"video/{current_video_filenames['depth']}"),
-                ]
-                print("Started direct RTSP archive recording")
+            with archive_lock:
+                if current_video_filenames and not archive_recorders and maintenance.can_write(current_operation_id):
+                    archive_recorders = [
+                        start_archive_recorder(COLOR_RTSP_URL, f"video/{current_video_filenames['color']}"),
+                        start_archive_recorder(DEPTH_RTSP_URL, f"video/{current_video_filenames['depth']}"),
+                    ]
+                    print("Started direct RTSP archive recording")
             config = simulation_config.copy()
             result = detect(
                 frame,
@@ -252,6 +263,54 @@ app = FastAPI(lifespan=lifespan)
 app.include_router(rgbd_router)
 rgbd_receiver.config = lambda: simulation_config.copy()
 
+@app.middleware('http')
+async def maintenance_guard(request: Request, call_next):
+    admin_read = (request.method == 'GET' and request.url.path == '/api/simulation-config'
+                  and maintenance.token_ok(request.headers.get('authorization', '').removeprefix('Bearer ')))
+    if request.url.path != '/api/testing/lease' and not admin_read and not maintenance.allowed(request.headers):
+        return JSONResponse({'error': 'Exclusive maintenance checkpoint is active'}, status_code=423)
+    return await call_next(request)
+
+@app.get('/api/simulation-config')
+async def get_simulation_config():
+    return simulation_config.copy()
+
+@app.post('/api/testing/lease')
+async def testing_lease(request: Request):
+    if os.environ.get('API_TEST_ENABLED') != '1':
+        raise HTTPException(404)
+    if not maintenance.token_ok(request.headers.get('authorization', '').removeprefix('Bearer ')):
+        raise HTTPException(401)
+    data = await request.json()
+    action, identifier = data.get('action'), data.get('id')
+    if not isinstance(identifier, str) or len(identifier) != 36:
+        raise HTTPException(400, 'Invalid lease ID')
+    if action == 'acquire':
+        if maintenance.lease or current_operation_id or rgbd_receiver.connected or rgbd_receiver.operation_id:
+            raise HTTPException(409, 'AI operation/session/lease is active')
+        async with rgbd_receiver.lock:
+            if any(not item.with_suffix('.committed').exists() for item in rgbd_root.glob('*/*/*.json')):
+                raise HTTPException(409, 'Uncommitted RGB-D journals exist; recover them before testing')
+            maintenance.save({'id': identifier, 'quiesced': False, 'operationId': None})
+        return {'config': simulation_config.copy()}
+    if action == 'release' and not maintenance.lease:
+        return {'status': 'success'}  # Retry after a lost release response.
+    if not maintenance.lease or maintenance.lease['id'] != identifier:
+        raise HTTPException(409, 'Lease mismatch')
+    if action == 'quiesce':
+        maintenance.save({**maintenance.lease, 'quiesced': True})
+        await receive_operation_end()
+    elif action == 'restore':
+        if not maintenance.lease.get('quiesced'):
+            raise HTTPException(409, 'Quiesce first')
+        simulation_config.clear()
+        simulation_config.update(data['config'])
+    elif action == 'release':
+        maintenance.save(None)
+    else:
+        raise HTTPException(400, 'Unknown action')
+    return {'status': 'success'}
+
 
 @app.post("/api/simulation-config")
 async def receive_simulation_config(config: SimulationConfig):
@@ -267,27 +326,32 @@ async def receive_operation_update(update: OperationUpdate):
     global operation_started_at, operation_received_frame
     operation_started_at = time.monotonic()
     operation_received_frame = False
-    set_current_operation(update.opID)
-    current_operation_id = update.opID
+    if maintenance.lease:
+        maintenance.save({**maintenance.lease, 'operationId': update.opID})
     await rgbd_receiver.reset(update.opID)
-    stop_archive_recorders()
-    timestamp = int(time.time())
-    current_video_filenames = {
-        "color": f"color_detect_{update.opID}_{timestamp}.mp4",
-        "depth": f"depth_detect_{update.opID}_{timestamp}.mp4",
-    }
-    archive_recorders = []
+    with archive_lock:
+        stop_archive_recorders()
+        set_current_operation(update.opID)
+        current_operation_id = update.opID
+        timestamp = int(time.time())
+        current_video_filenames = {
+            "color": f"color_detect_{update.opID}_{timestamp}.mp4",
+            "depth": f"depth_detect_{update.opID}_{timestamp}.mp4",
+        }
+        archive_recorders = []
     return {"status": "success", "opID": update.opID}
 
 
 @app.post("/api/operation-end")
 async def receive_operation_end():
     global current_operation_id, current_video_filenames
-    stop_archive_recorders()
-    set_current_operation(None)
-    current_operation_id = None
+    with archive_lock:
+        # Disable creation before waiting for existing ffmpeg processes to stop.
+        current_video_filenames = None
+        current_operation_id = None
+        set_current_operation(None)
+        stop_archive_recorders()
     await rgbd_receiver.reset(None)
-    current_video_filenames = None
     return {"status": "success"}
 
 

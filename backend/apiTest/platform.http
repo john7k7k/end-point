@@ -236,11 +236,14 @@ Content-Type: application/json
 ### 44 AI 內部結束（只停 AI，不會設定 DB endTime，一般用上方完整結束流程）
 POST {{ai}}/api/operation-end
 
-### 45 刪除 detection（不可復原，僅測試 id，非級聯刪除）
+### 45 刪除 detection（需先結束作業；移除衍生結果並重算後續螺絲融合）
 DELETE {{api}}/detections/{{detectionId}}
 
-### 46 刪除作業（不可復原，不會級聯移除影片／Telemetry，也不會正常終止串流）
+### 46 刪除作業（級聯移除影片、原始感測、Telemetry、同幀紀錄）
 DELETE {{api}}/operations/{{deleteOperationId}}
 
-### 47 刪除使用者（不可復原，僅測試帳號，不會級聯刪除作業）
+### 47 刪除使用者（級聯刪除其作業與全部後代；不可復原）
 DELETE {{api}}/users/{{deleteUserId}}
+
+### 48 查詢 AI 目前設定（與 backend 設定分開保存）
+GET {{ai}}/api/simulation-config

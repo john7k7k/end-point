@@ -13,7 +13,7 @@ watch(pairedSessions, rows => {
 let pollBusy = false;
 const refreshPairedSessions = async () => {
   const op = selectedOperationId.value;
-  const rows = op ? (await api.get(`/rgbd/sessions/${op}`)).data : [];
+  const rows = op ? (await api.get(`/rgbd/sessions/${op}`, { params: { mediaOnly: 1 } })).data : [];
   if (op === selectedOperationId.value) pairedSessions.value = rows;
   return rows.length > 0;
 };
@@ -66,7 +66,7 @@ const simulatedScrew = computed(() => ({
 }));
 const virtualDetectionVisible = computed(() => Math.floor((simulationTick.value + 20) / 4) % 13 !== 0);
 const activeDetection = computed(() => {
-  if (sourceMode.value === 'live') return detections.value.at(-1) || simulatedScrew.value;
+  if (sourceMode.value === 'live') return detections.value.at(-1) || null;
   if (!selectedVideoDetections.value.length) return null;
   const startedAt = new Date(selectedVideoDetections.value[0].timestamp).getTime() || (selectedVideo.value?.startedAt ? selectedVideo.value.startedAt * 1000 : null);
   if (!startedAt) return selectedVideoDetections.value[0] || simulatedScrew.value;
@@ -91,7 +91,9 @@ const rebuildDatabaseTrail = () => {
     positionTrail.value = liveTrail.value;
     return;
   }
-  const cutoff = sourceMode.value === 'history' ? (selectedVideo.value?.startedAt ? selectedVideo.value.startedAt * 1000 + currentTime.value * 1000 : new Date(activeDetection.value?.timestamp || 0).getTime()) : Infinity;
+  const start = selectedVideo.value?.startedAt ? selectedVideo.value.startedAt * 1000
+    : new Date(operations.value.find(op => op._id === selectedOperationId.value)?.startTime || activeDetection.value?.timestamp || 0).getTime();
+  const cutoff = sourceMode.value === 'history' ? start + currentTime.value * 1000 : Infinity;
   const trails = Object.fromEntries(Object.keys(trailColors).map((algorithm) => [algorithm, telemetryRecords.value.filter((item) => item.fusionAlgorithm === algorithm && new Date(item.timestamp).getTime() <= cutoff).map((item) => item.telemetry?.position).filter(Boolean).slice(-80).map((point) => ({ ...point }))]));
   algorithmTrails.value = trails;
   positionTrail.value = trails[fusionAlgorithm.value] || [];
@@ -117,11 +119,11 @@ const createDeviceIcon = (color) => {
   const group = new THREE.Group(); const dot = new THREE.Mesh(new THREE.SphereGeometry(.12, 20, 16), new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: .22 })); const beam = new THREE.Mesh(new THREE.ConeGeometry(.45, 1.2, 24, 1, true), new THREE.MeshBasicMaterial({ color, transparent: true, opacity: .2, side: THREE.DoubleSide })); beam.rotation.x = -Math.PI / 2; beam.position.z = .6; group.add(dot, beam); return group;
 };
 const updateThreeScene = () => {
-  if (!scene || !positioning.value || !deviceGroup || !screwGroup) return;
+  if (!scene || !positioning.value?.telemetry?.position || !deviceGroup || !screwGroup) return;
   const telemetry = positioning.value.telemetry;
   deviceGroup.visible = false;
   deviceGroup.position.copy(toScenePosition(telemetry.position));
-  const radians = Math.PI / 180, o = telemetry.orientation;
+  const radians = Math.PI / 180, o = telemetry.orientation || { roll: 0, pitch: 0, yaw: 0 };
   // The scene maps world (X,Y,Z) to Three.js (X,Z,Y), while the cone faces local -Z.
   // Compensate the fixed axis offset for a camera heading aligned with walking direction.
   const sceneYaw = -(o.yaw - 90) * radians;
@@ -148,7 +150,10 @@ const updateThreeScene = () => {
   });
 };
 const initThreeScene = async () => {
-  await nextTick(); if (renderer || !sceneContainer.value) { updateThreeScene(); return; }
+  await nextTick();
+  if (!sceneContainer.value) return;
+  if (renderer && renderer.domElement.parentElement !== sceneContainer.value) disposeThreeScene();
+  if (renderer) { updateThreeScene(); return; }
   scene = new THREE.Scene(); scene.background = new THREE.Color(0xffffff);
   camera = new THREE.PerspectiveCamera(42, 1, .1, 100); camera.position.set(25, 19, 26);
   renderer = new THREE.WebGLRenderer({ antialias: true }); renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2)); sceneContainer.value.appendChild(renderer.domElement);
@@ -166,7 +171,16 @@ const initThreeScene = async () => {
 const resizeThreeScene = () => { if (!renderer || !sceneContainer.value) return; const { clientWidth: width, clientHeight: height } = sceneContainer.value; if (!width || !height) return; renderer.setSize(width, height); camera.aspect = width / height; camera.updateProjectionMatrix(); };
 const showSceneTooltip = (event) => { if (!renderer || !sceneTooltip.value) return; const rect = renderer.domElement.getBoundingClientRect(); pointer.set(((event.clientX - rect.left) / rect.width) * 2 - 1, -((event.clientY - rect.top) / rect.height) * 2 + 1); raycaster.setFromCamera(pointer, camera); const found = raycaster.intersectObjects(scene.children, true).map((hit) => { let object = hit.object; while (object && !object.userData.hoverLabel) object = object.parent; return object; }).find(Boolean); sceneTooltip.value.style.display = found ? 'block' : 'none'; if (found) { sceneTooltip.value.textContent = found.userData.hoverLabel; sceneTooltip.value.style.left = `${event.clientX - rect.left + 12}px`; sceneTooltip.value.style.top = `${event.clientY - rect.top + 12}px`; } };
 const renderThreeScene = () => { sceneFrame = requestAnimationFrame(renderThreeScene); controls.update(); renderer.render(scene, camera); };
-const disposeThreeScene = () => { cancelAnimationFrame(sceneFrame); resizeObserver?.disconnect(); renderer?.domElement?.removeEventListener('pointermove', showSceneTooltip); renderer?.dispose(); renderer = null; };
+const disposeThreeScene = () => {
+  cancelAnimationFrame(sceneFrame); resizeObserver?.disconnect(); controls?.dispose();
+  renderer?.domElement?.removeEventListener('pointermove', showSceneTooltip);
+  scene?.traverse(object => {
+    object.geometry?.dispose();
+    for (const material of Array.isArray(object.material) ? object.material : [object.material]) material?.dispose();
+  });
+  renderer?.domElement?.remove(); renderer?.dispose(); renderer = null; scene = null;
+  rawScrewGroups.clear();
+};
 
 const loadHistory = async () => {
   videos.value = []; detections.value = []; telemetryRecords.value = []; selectedVideoName.value = ''; currentTime.value = 0;
@@ -185,6 +199,7 @@ const refreshOperations = async () => { operations.value = (await api.get('/oper
 const refreshPositioning = async () => {
   if (pairedSessions.value.length) return;
   if (!selectedOperationId.value) return;
+  const op = selectedOperationId.value, mode = sourceMode.value;
   try {
     const params = { source: sourceMode.value, algorithm: fusionAlgorithm.value, screwAlgorithm: screwFusionAlgorithm.value };
     if (sourceMode.value === 'history' && selectedVideo.value?.startedAt) {
@@ -192,12 +207,16 @@ const refreshPositioning = async () => {
       telemetryRecords.value = (await api.get(`/operator-telemetry/${selectedOperationId.value}`, { params: { at: params.at } })).data;
     }
     if (activeDetection.value?._id && activeDetection.value._id !== 'simulated-screw') params.detectionId = activeDetection.value._id;
-    positioning.value = (await api.get(`/positioning/latest/${selectedOperationId.value}`, { params })).data;
+    const data = (await api.get(`/positioning/latest/${op}`, { params })).data;
+    if (op !== selectedOperationId.value || mode !== sourceMode.value || pairedSessions.value.length) return;
+    if (!data.telemetry?.position) throw new Error('尚無設備定位資料');
+    positioning.value = data;
     if (sourceMode.value === 'live' && positioning.value?.telemetry?.position) {
       liveTrail.value = [...liveTrail.value, { ...positioning.value.telemetry.position }].slice(-80);
     }
     rebuildDatabaseTrail();
     await initThreeScene(); updateThreeScene();
+    error.value = '';
   } catch (err) { error.value = err.response?.data?.error || '無法讀取定位資料。'; }
 };
 const refreshLiveDetections = async () => {
@@ -228,7 +247,16 @@ const updatePlaybackAndSync = async (event) => { updatePlayback(event); await sy
 const seek = async (event) => { if (videoPlayer.value) { videoPlayer.value.currentTime = Number(event.target.value); currentTime.value = Number(event.target.value); if (sourceMode.value === 'history') await refreshPositioning(); } };
 const toggleLiveDisplay = async () => { livePaused.value = !livePaused.value; if (!livePaused.value) { liveFrameKey.value += 1; await refreshLiveDetections(); await refreshPositioning(); } };
 
-watch(selectedOperationId, async () => { pairedSessions.value = []; positionTrail.value = []; lastHistoryPositionSecond = -1; if (sourceMode.value === 'history') loadHistory(); else if (!await refreshPairedSessions()) refreshPositioning(); });
+watch(selectedOperationId, async () => {
+  pairedSessions.value = []; positioning.value = null; detections.value = [];
+  positionTrail.value = []; liveTrail.value = [];
+  algorithmTrails.value = Object.fromEntries(Object.keys(trailColors).map(id => [id, []]));
+  lastHistoryPositionSecond = -1;
+  disposeThreeScene();
+  if (sourceMode.value === 'history') await loadHistory();
+  else if (!await refreshPairedSessions()) await refreshPositioning();
+});
+watch(() => pairedSessions.value.length > 0, paired => { if (paired) disposeThreeScene(); });
 watch(viewMode, () => { selectedVideoName.value = modeVideos.value[0]?.filename || ''; currentTime.value = 0; });
 watch(fusionAlgorithm, () => { if (sourceMode.value === 'live') { liveTrail.value = []; Object.keys(trailVisibility).forEach((algorithm) => { trailVisibility[algorithm] = algorithm === fusionAlgorithm.value; }); } });
 watch(sourceMode, async () => {
@@ -257,7 +285,7 @@ onMounted(async () => {
         if (op !== selectedOperationId.value) selectedOperationId.value = op;
         if (await refreshPairedSessions()) return;
         if (!livePaused.value) { simulationTick.value += 1; await refreshLiveDetections(); await refreshPositioning(); }
-      } catch { /* Retry discovery on next tick. */ }
+      } catch (err) { error.value = err.response?.data?.error || '串流定位資料讀取失敗，請檢查後端連線。'; }
       finally { pollBusy = false; }
     }, 500);
   } catch { error.value = '無法讀取系統資料。'; }
@@ -276,6 +304,7 @@ onUnmounted(() => { window.clearInterval(positionTimer); disposeThreeScene(); })
       <label class="switch-control"><input v-model="showDetections" type="checkbox" /> 顯示螺絲偵測</label>
       <div class="segmented-control"><button :class="{ active: viewMode === 'color' }" type="button" @click="viewMode = 'color'">光學影像</button><button :class="{ active: viewMode === 'depth' }" type="button" @click="viewMode = 'depth'">深度影像</button></div>
     </div>
+    <p v-if="sourceMode === 'live' && !loading && !activeOperation" class="placeholder">尚無進行中的作業。RTSP 只傳送影像；請先開始作業並確認 MQTT ACK，才能顯示設備定位與軌跡。</p>
     <RgbdViewer v-if="pairedSessions.length" :key="`${sourceMode}-${selectedOperationId}`" :operation-id="selectedOperationId" :mode="sourceMode" :view="viewMode" :sessions="pairedSessions" :selected-session="pairedSessionId" :show-detections="showDetections" />
     <template v-else>
     <p v-if="loading" class="placeholder">正在讀取資料…</p>

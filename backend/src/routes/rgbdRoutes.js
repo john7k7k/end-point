@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { blockedOperations } from '../maintenance/lease.js';
 import mongoose from 'mongoose';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
@@ -13,6 +14,7 @@ import { deviceAlgorithms as algorithms } from '../positioning/deviceAlgorithms.
 const router = Router();
 const root = process.env.RGBD_ARCHIVE_ROOT || fileURLToPath(new URL('../../../AI/video/rgbd/', import.meta.url));
 const queues = new Map();
+export async function drainRgbd(id) { await Promise.allSettled([...queues].filter(([key]) => key.startsWith(id + '/')).map(([, queue]) => queue.tail)); }
 const validSession = s => typeof s === 'string' && /^[0-9a-f-]{36}$/i.test(s);
 const validId = s => mongoose.isValidObjectId(s);
 const ns = s => typeof s === 'string' && /^\d{1,20}$/.test(s);
@@ -37,6 +39,7 @@ router.post('/frames', async (req, res) => {
   if (queue.count >= 2) return res.status(429).json({ error: 'frame queue full; retry same frame' });
   queues.set(queueKey, queue); queue.count++;
   const task = queue.tail.then(async () => {
+    if (blockedOperations.has(String(data.operationId))) return res.status(409).json({ error: 'Operation is being deleted' });
     const key = { operationId: data.operationId, sessionId: data.sessionId, frameId: data.frameId };
     const existing = await RgbdFrame.findOne(key).lean();
     if (existing) return res.status(201).json({ id: existing._id, frameId: existing.frameId, status: existing.status });
@@ -76,8 +79,12 @@ router.post('/frames', async (req, res) => {
 
 router.get('/sessions/:operationId', async (req, res) => {
   if (!validId(req.params.operationId)) return res.status(400).json({ error: 'invalid operationId' });
+  const match = { operationId: new mongoose.Types.ObjectId(req.params.operationId) };
+  // Metadata-only API probes are valid records, but cannot drive an image viewer.
+  // Keep the unfiltered API for diagnostics and backward compatibility.
+  if (req.query.mediaOnly === '1') match.rawPacketPath = { $type: 'string', $ne: '' };
   res.json(await RgbdFrame.aggregate([
-    { $match: { operationId: new mongoose.Types.ObjectId(req.params.operationId) } },
+    { $match: match },
     { $group: { _id: '$sessionId', count: { $sum: 1 }, lastFrameId: { $max: '$frameId' }, durationMs: { $max: '$videoTimeMs' }, updatedAt: { $max: '$updatedAt' } } },
     { $sort: { updatedAt: -1 } }
   ]));

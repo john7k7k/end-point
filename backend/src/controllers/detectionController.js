@@ -1,4 +1,7 @@
 import Detection from "../models/Detection.js";
+import Operation from '../models/Operation.js';
+import { blockedOperations } from '../maintenance/lease.js';
+import { deleteDetection as cascadeDetection } from '../maintenance/cascade.js';
 import { getDeviceTelemetry } from "../mqtt/mqttClient.js";
 import { getSimulationConfigValue } from "./simulationController.js";
 import { persistDetectionWithScrewFusion } from "../positioning/screwFusion.js";
@@ -54,6 +57,9 @@ export const createDetection = async (req, res) => {
       return res.status(400).json({ error: "objectClass is required" });
     }
 
+    if (blockedOperations.has(String(operationId)) || !await Operation.exists({ _id: operationId, endTime: null })) {
+      return res.status(409).json({ error: 'Operation does not exist or is not accepting detections' });
+    }
     const telemetry = getDeviceTelemetry();
     const enriched = attachPositioningData(req.body, telemetry);
     if (!enriched) return res.status(204).end();
@@ -77,6 +83,6 @@ export const updateDetection = async (req, res) => {
 };
 
 export const deleteDetection = async (req, res) => {
-  await Detection.findByIdAndDelete(req.params.id);
-  res.json({ message: "deleted" });
+  try { res.json(await cascadeDetection(req.params.id)); }
+  catch (error) { res.status(error.status || 500).json({ error: error.message }); }
 };

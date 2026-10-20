@@ -24,6 +24,7 @@ test('HTTP example covers every backend and AI business REST route', () => {
   }
   for(const source of [read('../../AI/main.py'),read('../../AI/rgbd_api.py')]) {
     for(const [,method,route]of source.matchAll(/@(?:app|router)\.(get|post|put|patch|delete)\(['"]([^'"]+)['"]/g)) {
+      if(route.startsWith('/api/testing/')) continue; // Dedicated protected-maintenance tests.
       assert(requests.some(([m,url])=>m===method.toUpperCase()&&url===route),`Missing AI ${method} ${route}`);
     }
   }
@@ -57,5 +58,5 @@ test('MQTT example has valid JSON payloads and all supported topics, with no fak
   assert.match(text,/vision\/operation\/ack\/\{\{userId\}\}/);
   assert.match(text,/vision\/notification/);
   const files=readdirSync(new URL('../apiTest/',import.meta.url),{withFileTypes:true}).filter(f=>f.isFile()).map(f=>f.name);
-  assert.deepEqual(files.sort(),['platform.http','platform.mqtt','rtsp_publish.py']);
+  assert.deepEqual(files.sort(),['RUN_ALL.md','platform.http','platform.mqtt','rtsp_publish.py','run-all.ps1']);
 });

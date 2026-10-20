@@ -16,6 +16,8 @@ import positioningRoutes from "./routes/positioningRoutes.js";
 import operatorTelemetryRoutes from "./routes/operatorTelemetryRoutes.js";
 import calibrationRoutes from "./routes/calibrationRoutes.js";
 import rgbdRoutes from "./routes/rgbdRoutes.js";
+import testingRoutes from './routes/testingRoutes.js';
+import { guard, trackRouter } from './maintenance/lease.js';
 
 const app = express();
 const __filename = fileURLToPath(import.meta.url);
@@ -26,6 +28,9 @@ console.log("Frontend dist exists:", existsSync(frontendDistPath));
 
 app.use(cors());
 app.use(express.json());
+app.use('/api', guard);
+app.use('/api/testing', testingRoutes);
+for (const router of [userRoutes, authRoutes, operationRoutes, detectionRoutes, deviceRoutes, videoRoutes, simulationRoutes, positioningRoutes, operatorTelemetryRoutes, calibrationRoutes, rgbdRoutes]) trackRouter(router);
 
 app.use("/api/users", userRoutes);
 app.use("/api/auth", authRoutes);

@@ -133,8 +133,16 @@ def run(options):
     if options.dry_run:
         print('dry-run 完成，未連線或發布。')
         return
-    with socket.create_connection((options.host, options.port), timeout=5):
-        pass
+    for attempt in range(3):
+        try:
+            with socket.create_connection((options.host, options.port), timeout=5):
+                pass
+            break
+        except OSError as error:
+            if attempt == 2:
+                raise RuntimeError(f'RTSP TCP 連線失敗 {options.host}:{options.port}，已重試 3 次：{error}') from error
+            print(f'RTSP TCP 暫時無回應，重試 {attempt + 2}/3…', flush=True)
+            time.sleep(1)
     processes = []
     try:
         for args in commands:

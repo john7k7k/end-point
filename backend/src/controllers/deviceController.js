@@ -1,6 +1,7 @@
 import Operation from "../models/Operation.js";
 import User from "../models/User.js";
 import client, { beginTelemetryOperation, finalizeTelemetryOperation } from "../mqtt/mqttClient.js";
+import { internalHeaders } from '../maintenance/lease.js';
 
 export const operationStart = async (req, res) => {
   try {
@@ -64,7 +65,7 @@ export const operationEnd = async (req, res) => {
     await finalizeTelemetryOperation(opID);
 
     try {
-      await fetch("http://localhost:8000/api/operation-end", { method: "POST" });
+      await fetch("http://localhost:8000/api/operation-end", { method: "POST", headers: internalHeaders(), signal: AbortSignal.timeout(10000) });
     } catch (err) {
       console.error(`Failed to notify AI operation end: ${err.message}`);
     }

@@ -1,4 +1,5 @@
 import mqtt from "mqtt";
+import { lease, permitted, internalHeaders, blockedOperations, blockedUsers, track } from '../maintenance/lease.js';
 import { Worker } from 'node:worker_threads';
 import { backendInstanceId } from '../runtimeIdentity.js';
 import Operation from "../models/Operation.js";
@@ -8,7 +9,7 @@ import RawSensorMeasurement from "../models/RawSensorMeasurement.js";
 import OperatorTelemetry from "../models/OperatorTelemetry.js";
 import { getSimulationConfigValue } from "../controllers/simulationController.js";
 import { recordFusionTelemetrySet } from "../controllers/operatorTelemetryController.js";
-import { getFilterState, predict, resetAllFilters, setHeading, stepVirtual, updateUwb } from "../positioning/esEkf.js";
+import { captureFilterRuntime, restoreFilterRuntime, getFilterState, predict, resetAllFilters, setHeading, stepVirtual, updateUwb } from "../positioning/esEkf.js";
 import { getWorkspaceState } from "../positioning/screwWorkspace.js";
 import { persistDetectionWithScrewFusion, rebuildScrewFusionForOperation } from "../positioning/screwFusion.js";
 
@@ -20,8 +21,21 @@ let lastNotificationKey = '';
 let lastNotificationAt = 0;
 let activeOperationId = null;
 const pendingRawWrites = new Set();
+export const getActiveTelemetryOperation = () => activeOperationId;
+export const waitForTelemetryWrites = () => Promise.allSettled([...pendingRawWrites]);
+export const capturePipelineRuntime = () => ({ activeOperationId, hasUwbRanges, hasImuData, lastNotificationKey, lastNotificationAt, filters: captureFilterRuntime() });
+export const restorePipelineRuntime = value => {
+  ({ activeOperationId, hasUwbRanges, hasImuData, lastNotificationKey, lastNotificationAt } = value);
+  restoreFilterRuntime(value.filters);
+};
 export const setActiveTelemetryOperation = (operationId) => { activeOperationId = operationId ? String(operationId) : null; };
-export const beginTelemetryOperation = (operationId) => { resetAllFilters(); setActiveTelemetryOperation(operationId); };
+export const beginTelemetryOperation = (operationId) => {
+  resetAllFilters();
+  // Availability belongs to this operation, not the last MQTT test/session.
+  hasUwbRanges = false; hasImuData = false;
+  lastNotificationKey = ''; lastNotificationAt = 0;
+  setActiveTelemetryOperation(operationId);
+};
 
 const buildTelemetry = (fusionAlgorithm) => {
   const filter = getFilterState(fusionAlgorithm);
@@ -39,7 +53,7 @@ const buildTelemetry = (fusionAlgorithm) => {
 };
 
 const persistRawFrame = async (source, payload, dataSource = "mqtt", timestamp = Date.now()) => {
-  if (!activeOperationId) return;
+  if (!activeOperationId || blockedOperations.has(activeOperationId)) return;
   const write = RawSensorMeasurement.create({ operationId: activeOperationId, timestamp: new Date(timestamp), source, dataSource, payload });
   pendingRawWrites.add(write);
   try { await write; } finally { pendingRawWrites.delete(write); }
@@ -113,15 +127,20 @@ client.on("connect", () => {
   console.log("MQTT subscribed to vision/operation/start, vision/operation/end, and vision/detection");
 });
 
-client.on("message", async (topic, message) => {
-  console.log(`MQTT message received on ${topic}:`, message.toString());
+client.on("message", (topic, message) => { void track(async () => {
+  // Raw messages may carry maintenance credentials; never log them.
   try {
     const data = JSON.parse(message.toString());
+    if (!permitted(data._checkpoint, data._adminToken)) return;
+    delete data._checkpoint; delete data._adminToken;
+    if (blockedUsers.has(String(data.userId))) return;
+    if (lease && [data.operationId, data.opID, data.userId].some(id => lease.originalIds.includes(String(id)))) return;
+    if (blockedOperations.has(String(data.operationId || data.opID || activeOperationId))) return;
     console.log(`📨 Received MQTT message on ${topic}:`, data);
     if (topic === "vision/device/pose") {
       if (String(data.operationId) !== activeOperationId) throw new Error('pose operation mismatch');
       const response = await fetch('http://127.0.0.1:8000/api/rgbd/pose', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        method: 'POST', headers: { 'Content-Type': 'application/json', ...internalHeaders() },
         body: JSON.stringify(data), signal: AbortSignal.timeout(2000)
       });
       if (!response.ok) console.error('RGB-D pose rejected:', await response.text());
@@ -145,7 +164,7 @@ client.on("message", async (topic, message) => {
   } catch (err) {
     console.error("MQTT parse error:", err);
   }
-});
+  }); });
 
 async function handleOperationStart(data) {
   if (data.backendInstanceId && data.backendInstanceId !== backendInstanceId) return;
@@ -176,7 +195,7 @@ async function handleOperationStart(data) {
     // can race the operation-update request and fail its RGB-D handshake.
     const ready = await fetch(AI_ENDPOINT, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...internalHeaders() },
       body: JSON.stringify({ opID: operation._id.toString() }),
       signal: AbortSignal.timeout(15000)
     });
@@ -226,7 +245,7 @@ async function handleOperationEnd(data) {
     const screwFusion = await rebuildScrewFusionForOperation(opID);
     console.log(`Rebuilt ${screwFusion.results} screw fusion results for operation ${opID}`);
     try {
-      await fetch("http://localhost:8000/api/operation-end", { method: "POST" });
+      await fetch("http://localhost:8000/api/operation-end", { method: "POST", headers: internalHeaders(), signal: AbortSignal.timeout(10000) });
     } catch (err) {
       console.error(`Failed to notify AI operation end: ${err.message}`);
     }
@@ -250,6 +269,7 @@ async function handleDetection(data) {
       return console.log(json({ error: "objectClass is required" }));
     }
 
+    if (!await Operation.exists({ _id: operationId, endTime: null })) return;
     const telemetry = getDeviceTelemetry();
     const recognizedScrew = telemetry.workspace.visibleScrews.sort((a, b) => a.depth - b.depth)[0];
     // The detector only updates records for a known screw inside camera FOV and depth limits.

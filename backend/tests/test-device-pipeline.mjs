@@ -13,6 +13,9 @@ test('live saves raw inputs only; end rebuilds all device algorithms', {skip: !p
   const op=new mongoose.Types.ObjectId();
   await mongoose.connect(process.env.RGBD_TEST_MONGO);
   try {
+    // Reproduce stale sensor availability left by the previous operation/test.
+    pipeline.default.emit('message','vision/uwb/ranges',Buffer.from(JSON.stringify({ranges:[{stationId:0,distance:3}]})));
+    pipeline.default.emit('message','vision/imu/data',Buffer.from(JSON.stringify({acceleration:{x:0,y:0,z:0},gyroscope:{x:0,y:0,z:0}})));
     pipeline.beginTelemetryOperation(op);
     for(const algorithm of ['ekf','complementary','weighted_average','gwo4d']) {
       getSimulationConfigValue().fusionAlgorithm=algorithm;

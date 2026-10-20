@@ -55,6 +55,11 @@ test('RGB-D storage: idempotency, history, validation, ended-operation rejection
       assert.equal((await post({ ...row, frameId: 3, captureTimeNs: '1000000000' })).status, 409);
       const sessions = await (await fetch(`${base}/sessions/${op._id}`)).json();
       assert.equal(sessions[0].count, 3);
+      const noMedia = await (await fetch(`${base}/sessions/${op._id}?mediaOnly=1`)).json();
+      assert.deepEqual(noMedia, [], 'metadata-only probes must not select the image viewer');
+      await RgbdFrame.updateOne({operationId:op._id,frameId:1}, {rawPacketPath:'AI/video/rgbd/test/000000000001.rgbd'});
+      const mediaSessions = await (await fetch(`${base}/sessions/${op._id}?mediaOnly=1`)).json();
+      assert.equal(mediaSessions[0].count,1);
       const timeline = await (await fetch(`${base}/frames/${op._id}?sessionId=${row.sessionId}&index=1&after=0`)).json();
       assert.deepEqual(timeline.map(f => f.videoTimeMs), [100, 200]);
       await Operation.updateOne({ _id: op._id }, { endTime: new Date() });

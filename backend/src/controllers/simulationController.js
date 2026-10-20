@@ -1,4 +1,5 @@
 import { deviceAlgorithms as allowedFusionAlgorithms } from '../positioning/deviceAlgorithms.js';
+import { internalHeaders } from '../maintenance/lease.js';
 const allowedScrewFusionAlgorithms = ["average", "ekf", "es_ekf", "rmv_fgo"];
 
 let simulationConfig = {
@@ -9,6 +10,7 @@ let simulationConfig = {
 };
 
 export const getSimulationConfigValue = () => simulationConfig;
+export const setSimulationConfigValue = value => { simulationConfig = { ...value }; };
 
 export const getSimulationConfig = (_req, res) => {
   res.json(simulationConfig);
@@ -28,7 +30,7 @@ export const updateSimulationConfig = async (req, res) => {
   try {
     const aiResponse = await fetch("http://127.0.0.1:8000/api/simulation-config", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...internalHeaders() },
       body: JSON.stringify(simulationConfig),
       signal: AbortSignal.timeout(3000)
     });

@@ -9,6 +9,7 @@ from pathlib import Path
 from uuid import UUID
 
 import requests
+import maintenance
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from detector import run_screw_detector
@@ -21,7 +22,9 @@ BACKEND = 'http://127.0.0.1:3000'
 
 def persist_journal(sidecar, recovery=False):
     record = json.loads(sidecar.read_text(encoding='utf-8'))
-    response = requests.post(f'{BACKEND}/api/rgbd/frames', json=dict(record, recovery=recovery), timeout=5)
+    if not maintenance.can_write(record['operationId']):
+        raise ValueError('Journal is blocked by maintenance lease')
+    response = requests.post(f'{BACKEND}/api/rgbd/frames', json=dict(record, recovery=recovery), headers=maintenance.headers(), timeout=5)
     response.raise_for_status()
     sidecar.with_suffix('.committed').touch()
     sidecar.with_suffix('.pending').unlink(missing_ok=True)
@@ -37,6 +40,8 @@ def replay_pending(recover_unmarked=True):
     # an earlier uncommitted observation and thereby change a fusion window.
     count = 0
     for folder in ROOT.glob('*/*'):
+        if not maintenance.can_write(folder.parent.name):
+            continue
         # Positive commit marker closes the crash window between writing JSON
         # and creating the pending marker (or receiving a successful HTTP ACK).
         if recover_unmarked:
@@ -96,6 +101,8 @@ class RGBDReceiver:
     def process(self, packet):
         received_ns = time.time_ns()
         h, color, depth = decode_packet(packet)
+        if not maintenance.can_write(h['operationId']):
+            raise ValueError('Frame is blocked by maintenance lease')
         if h['operationId'] != self.operation_id:
             raise ValueError('operation mismatch; wait for operation-update before sending')
         # UUID prevents arbitrary paths, operationId is validated separately.
@@ -127,7 +134,7 @@ class RGBDReceiver:
             detected = detected if isinstance(detected, list) else [detected] if detected else []
             calibration = None
             if pose is not None and detected:
-                response = requests.get(f'{BACKEND}/api/calibration/camera-extrinsics', timeout=2)
+                response = requests.get(f'{BACKEND}/api/calibration/camera-extrinsics', headers=maintenance.headers(), timeout=2)
                 response.raise_for_status()
                 calibration = response.json()
                 # The current platform has one extrinsics profile only.
@@ -203,6 +210,9 @@ async def status():
 @router.websocket('/ws/rgbd')
 async def receive_rgbd(ws: WebSocket):
     await ws.accept()
+    if not maintenance.allowed(ws.headers):
+        await ws.close(code=1008, reason='Maintenance lease is active')
+        return
     if receiver.connected:
         await ws.close(code=1008, reason='only one RGB-D publisher is allowed')
         return
@@ -210,6 +220,8 @@ async def receive_rgbd(ws: WebSocket):
     try:
         while True:
             message = await asyncio.wait_for(ws.receive(), timeout=10)
+            if not maintenance.allowed(ws.headers):
+                break
             if message['type'] == 'websocket.disconnect':
                 break
             try:

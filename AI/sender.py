@@ -1,4 +1,5 @@
 import requests
+import maintenance
 import time
 
 NODE_JS_URL = "http://localhost:3000/api/detections"
@@ -10,7 +11,7 @@ def get_current_operation():
     """查询当前活跃的 Operation，缓存其 ID"""
     global current_operation_id
     try:
-        response = requests.get(OPERATION_API, timeout=2)
+        response = requests.get(OPERATION_API, headers=maintenance.headers(), timeout=2)
         if response.status_code == 200:
             data = response.json()
             current_operation_id = data["_id"]
@@ -65,10 +66,13 @@ def send_result(result_data, video_filename=None):
     max_retries = 3
 
     while retry_count < max_retries:
+        if not maintenance.can_write(payload['operationId']):
+            return False
         try:
             response = requests.post(
                 NODE_JS_URL,
                 json=payload,
+                headers=maintenance.headers(),
                 timeout=2
             )
 

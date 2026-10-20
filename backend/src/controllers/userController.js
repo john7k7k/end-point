@@ -1,5 +1,6 @@
 import User from "../models/User.js";
 import mqttClient from "../mqtt/mqttClient.js";
+import { deleteUser as cascadeUser } from '../maintenance/cascade.js';
 
 const safeUser = (user) => ({ id: user._id.toString(), name: user.name, email: user.email, signUpTime: user.signUpTime });
 
@@ -31,6 +32,6 @@ export const updateUser = async (req, res) => {
 };
 
 export const deleteUser = async (req, res) => {
-  await User.findByIdAndDelete(req.params.id);
-  res.json({ message: "deleted" });
+  try { res.json(await cascadeUser(req.params.id)); }
+  catch (error) { res.status(error.status || 500).json({ error: error.message, userId: req.params.id }); }
 };

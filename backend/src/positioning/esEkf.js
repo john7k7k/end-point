@@ -17,6 +17,13 @@ const createInertialState = () => ({
 const complementaryState = createInertialState();
 const weightedAverageState = createInertialState();
 const gwoState = createInertialState();
+export const captureFilterRuntime = () => structuredClone([state, complementaryState, weightedAverageState, gwoState]);
+export const restoreFilterRuntime = snapshot => {
+  [state, complementaryState, weightedAverageState, gwoState].forEach((target, index) => {
+    for (const key of Object.keys(target)) delete target[key];
+    Object.assign(target, structuredClone(snapshot[index]));
+  });
+};
 const targetFor = algorithm => algorithm === 'gwo4d' ? gwoState : algorithm === 'complementary' ? complementaryState : algorithm === 'weighted_average' ? weightedAverageState : state;
 const resetState = (target) => Object.assign(target, createInertialState());
 
