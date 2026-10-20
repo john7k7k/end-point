@@ -13,6 +13,7 @@ AI/test/*
 !AI/test/paired_video.py
 !AI/test/test_rgbd_paired_video.py
 AI/**/__pycache__/
+backend/**/__pycache__/
 runtime/
 # Local presentation authoring runtime cache
 .cache/

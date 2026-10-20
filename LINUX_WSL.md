@@ -91,7 +91,7 @@ TEST_USER_ID=你的使用者_id .venv/bin/python AI/test/test2.py --rgbd
 python3 -m unittest discover -s scripts -p 'test_linux*.py' -v
 .venv/bin/python -m unittest discover -s AI/test -p 'test_rgbd*.py' -v
 RGBD_TEST_MONGO=mongodb://127.0.0.1:27017/vision_rgbd_sync_test \
-  node --test backend/apiTest/test-rgbd.mjs backend/apiTest/test-rgbd-fusion.mjs
+  node --test backend/tests/test-rgbd.mjs backend/tests/test-rgbd-fusion.mjs
 .venv/bin/python AI/test/rgbd_e2e.py
 ```
 

@@ -526,8 +526,8 @@ npm ci 會重新安裝對應的 node_modules；請先停止使用該依賴的程
 python3 -m unittest discover -s scripts -p 'test_linux*.py' -v
 .venv/bin/python -m unittest discover -s AI/test -p 'test_rgbd*.py' -v
 RGBD_TEST_MONGO=mongodb://127.0.0.1:27017/vision_rgbd_sync_test \
-  node --test backend/apiTest/test-rgbd.mjs backend/apiTest/test-rgbd-fusion.mjs \
-  backend/apiTest/test-telemetry-replay.mjs backend/apiTest/test-device-pipeline.mjs
+  node --test backend/tests/test-rgbd.mjs backend/tests/test-rgbd-fusion.mjs \
+  backend/tests/test-telemetry-replay.mjs backend/tests/test-device-pipeline.mjs
 .venv/bin/python AI/test/rgbd_e2e.py
 ```
 

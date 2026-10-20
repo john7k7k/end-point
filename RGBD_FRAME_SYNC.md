@@ -218,7 +218,7 @@ python AI/prepare_rgbd_archive.py --operation-id 你的opID
 ```powershell
 python -m unittest discover -s AI/test -p 'test_rgbd*.py' -v
 $env:RGBD_TEST_MONGO='mongodb://127.0.0.1:27017/vision_rgbd_sync_test'
-node --test backend/apiTest/test-rgbd.mjs backend/apiTest/test-rgbd-fusion.mjs
+node --test backend/tests/test-rgbd.mjs backend/tests/test-rgbd-fusion.mjs
 python AI/test/rgbd_e2e.py
 npm --prefix frontend run build
 ```
