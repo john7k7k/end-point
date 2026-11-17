@@ -1,0 +1,7 @@
+paho-mqtt>=2,<3
+requests>=2,<3
+websockets>=13,<17
+numpy
+opencv-python-headless
+pyserial>=3.5,<4
+pyrealsense2
