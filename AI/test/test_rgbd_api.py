@@ -18,6 +18,7 @@ from fastapi import FastAPI
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import rgbd_api
 from rgbd_sync import encode_packet
+from camera_intrinsics import effective_intrinsics
 from test_rgbd_sync import header
 from rgbd_transport import PairedPublisher
 
@@ -31,6 +32,11 @@ class Response:
 
 
 class APITests(unittest.TestCase):
+    def test_intrinsics_resolution_and_packet_fallback(self):
+        h = dict(width=20, height=20, intrinsics=dict(fx=50, fy=50, cx=10, cy=10))
+        self.assertIsNone(effective_intrinsics(h, dict(enabled=True, width=40, height=20)))
+        self.assertEqual(effective_intrinsics(h, dict(enabled=False))['values'], h['intrinsics'])
+
     def test_websocket_pipeline_and_retry(self):
         app = FastAPI()
         app.include_router(rgbd_api.router)
@@ -43,6 +49,14 @@ class APITests(unittest.TestCase):
         thread = threading.Thread(target=lambda: server.run(sockets=[sock]), daemon=True)
         records = []
         failed = False
+        profiles = iter([20, 40])
+        def get(url, **_kwargs):
+            response = Response()
+            if url.endswith('/camera-intrinsics/default'):
+                fx = next(profiles)
+                response.json = lambda: dict(enabled=True, revision=str(fx), width=20, height=20,
+                                             fx=fx, fy=fx, cx=1, cy=1)
+            return response
         def post(_url, json, **_kwargs):
             nonlocal failed
             if not failed:
@@ -53,7 +67,7 @@ class APITests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='rgbd-test-') as temp, \
                 patch.object(rgbd_api, 'receiver', fresh), \
                 patch.object(rgbd_api, 'ROOT', Path(temp)/'rgbd'), \
-                patch.object(rgbd_api.requests, 'get', return_value=Response()), \
+                patch.object(rgbd_api.requests, 'get', side_effect=get), \
                 patch.object(rgbd_api.requests, 'post', side_effect=post), \
                 patch.object(rgbd_api, 'run_screw_detector', wraps=rgbd_api.run_screw_detector) as detector:
             thread.start()
@@ -66,6 +80,12 @@ class APITests(unittest.TestCase):
                 self.assertEqual(len(records), 3)
                 self.assertEqual(records[0]['status'], 'localized')
                 self.assertIsNotNone(records[0]['result']['rawAbsolutePosition'])
+                self.assertEqual(records[0]['result']['intrinsicsUsed']['values']['fx'], 20)
+                self.assertEqual(records[2]['result']['intrinsicsUsed']['values']['fx'], 40)
+                self.assertNotEqual(records[0]['metadata']['intrinsics']['fx'], 20)
+                point = records[0]['result']['cameraPosition']
+                center = records[0]['result']['center_coordinate']
+                self.assertAlmostEqual(point['x'], (int(center['x']) - 1) * point['z'] / 20)
                 self.assertEqual(records[1]['status'], 'pair_time_mismatch')
                 self.assertIsNone(records[1]['result'])
                 self.assertEqual(len(list(Path(temp).rglob('*.rgbd'))), 3)

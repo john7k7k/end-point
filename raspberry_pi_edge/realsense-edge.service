@@ -1,0 +1,17 @@
+[Unit]
+Description=RealSense paired RGB-D WebSocket publisher
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=realsense
+WorkingDirectory=/opt/positioning/raspberry_pi_edge
+EnvironmentFile=/etc/realsense-edge.env
+ExecStart=/opt/positioning/raspberry_pi_edge/.venv/bin/python /opt/positioning/raspberry_pi_edge/realsense_edge.py --follow-server --server ${PLATFORM_SERVER}
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target

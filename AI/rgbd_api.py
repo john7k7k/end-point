@@ -14,6 +14,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from detector import run_screw_detector
 from rgbd_sync import FrameSequence, PoseBuffer, decode_packet, camera_point, world_point
+from camera_intrinsics import effective_intrinsics, camera_profile_id
 
 router = APIRouter()
 ROOT = Path(__file__).resolve().parent / 'video' / 'rgbd'
@@ -80,6 +81,9 @@ class RGBDReceiver:
         self.sequence = FrameSequence()
         self.poses = PoseBuffer()
         self.connected = False
+        self.websocket = None
+        self.source_mode = 'websocket'
+        self.source_generation = 0
         self.last_packet_at = 0
         self.lock = asyncio.Lock()
         self.config = lambda: {'detectionAlgorithm': 'mock_yolo'}
@@ -133,7 +137,19 @@ class RGBDReceiver:
             detected = run_screw_detector(color, config['detectionAlgorithm'])
             detected = detected if isinstance(detected, list) else [detected] if detected else []
             calibration = None
-            if pose is not None and detected:
+            intrinsics_used = None
+            projection_header = h
+            if detected:
+                camera_id = camera_profile_id(h)
+                response = requests.get(f'{BACKEND}/api/calibration/camera-intrinsics/{camera_id}',
+                                        headers=maintenance.headers(), timeout=2)
+                response.raise_for_status()
+                intrinsics_used = effective_intrinsics(h, response.json())
+                if intrinsics_used is None:
+                    status = 'calibration_mismatch'
+                else:
+                    projection_header = dict(h, intrinsics=intrinsics_used['values'])
+            if pose is not None and detected and status != 'calibration_mismatch':
                 response = requests.get(f'{BACKEND}/api/calibration/camera-extrinsics', headers=maintenance.headers(), timeout=2)
                 response.raise_for_status()
                 calibration = response.json()
@@ -142,13 +158,14 @@ class RGBDReceiver:
                     status = 'calibration_mismatch'
             observations = []
             for detection in detected:
-                point = camera_point(depth, detection['center_coordinate'], h)
+                point = camera_point(depth, detection['center_coordinate'], projection_header) if intrinsics_used else None
                 absolute = world_point(point, pose, calibration) if point is not None and pose and calibration and status != 'calibration_mismatch' else None
                 observations.append(dict(detection, cameraPosition=point, rawAbsolutePosition=absolute))
             if status != 'calibration_mismatch':
                 status = ('no_detection' if not observations else 'pose_unavailable' if pose is None
                           else 'localized' if any(o['rawAbsolutePosition'] for o in observations) else 'invalid_depth')
             result = dict(observations=observations, devicePose=pose, calibration=calibration,
+                          intrinsicsUsed=intrinsics_used,
                           detectionIsSimulated=config['detectionAlgorithm'] == 'mock_yolo')
             # Compatibility for existing diagnostic clients; canonical list can
             # contain zero, one, or multiple detections.
@@ -213,10 +230,13 @@ async def receive_rgbd(ws: WebSocket):
     if not maintenance.allowed(ws.headers):
         await ws.close(code=1008, reason='Maintenance lease is active')
         return
-    if receiver.connected:
-        await ws.close(code=1008, reason='only one RGB-D publisher is allowed')
-        return
-    receiver.connected = True
+    async with receiver.lock:
+        if receiver.source_mode != 'websocket' or receiver.connected:
+            await ws.close(code=1008, reason='WebSocket camera source is unavailable')
+            return
+        receiver.connected = True
+        receiver.websocket = ws
+        generation = receiver.source_generation
     try:
         while True:
             message = await asyncio.wait_for(ws.receive(), timeout=10)
@@ -242,6 +262,8 @@ async def receive_rgbd(ws: WebSocket):
                                     break
                                 await asyncio.sleep(.01)
                 async with receiver.lock:
+                    if receiver.source_mode != 'websocket' or generation != receiver.source_generation:
+                        break
                     if message.get('bytes') is not None:
                         # One frame in flight, explicit ACK backpressure. No unbounded AI queue.
                         previous = (receiver.sequence.last, receiver.sequence.last_time, receiver.sequence.missing)
@@ -293,9 +315,11 @@ async def receive_rgbd(ws: WebSocket):
                     break
             except (ValueError, KeyError, TypeError, OSError, requests.RequestException) as error:
                 await ws.send_json({'type': 'error', 'error': str(error), 'persisted': False})
-    except (WebSocketDisconnect, asyncio.TimeoutError):
+    except (WebSocketDisconnect, asyncio.TimeoutError, RuntimeError):
         pass
     finally:
-        receiver.connected = False
-        if ws.client_state.name == 'CONNECTED':
+        if receiver.websocket is ws:
+            receiver.connected = False
+            receiver.websocket = None
+        if ws.client_state.name == 'CONNECTED' and ws.application_state.name == 'CONNECTED':
             await ws.close()

@@ -7,6 +7,8 @@ AI/test/*
 !AI/test/test_rgbd_api.py
 !AI/test/test_rgbd_sensor_metadata.py
 !AI/test/test_rgbd_lifecycle.py
+!AI/test/test_camera_source.py
+AI/native/build/
 !AI/test/test_rgbd_ack.py
 !AI/test/rgbd_e2e.py
 !AI/test/rgbd_transport.py

@@ -18,6 +18,9 @@ from rtsp_stream import get_dual_stream
 from archive_recorder import ArchiveRecorder
 from sender import get_current_operation, send_result, set_current_operation
 from rgbd_api import router as rgbd_router, receiver as rgbd_receiver, recovery_worker, ROOT as rgbd_root
+from camera_source import CameraSource, CameraSourceConfig
+
+camera_source = CameraSource(rgbd_receiver)
 
 # Some OpenCV builds omit this optional logging API.
 if hasattr(cv2, "setLogLevel"):
@@ -171,6 +174,8 @@ def process_stream():
             if current_operation_id:
                 operation_received_frame = True
             lost_count = 0
+            if camera_source.config.mode != 'websocket' or rgbd_receiver.session_id:
+                continue
             config = simulation_config.copy()
             result = detect(
                 frame,
@@ -179,7 +184,7 @@ def process_stream():
                 screw_fusion_algorithm=config["screwFusionAlgorithm"],
             )
             # Paired mode owns localization. RTSP remains preview/archive only.
-            if not rgbd_receiver.session_id:
+            if camera_source.config.mode == 'websocket' and not rgbd_receiver.session_id:
                 send_result(result, current_video_filenames["color"] if current_video_filenames else None)
         else:
             lost_count += 1
@@ -187,7 +192,8 @@ def process_stream():
                 time.sleep(0.1)
                 continue
 
-            if (not rgbd_receiver.connected and operation_received_frame):
+            if (not camera_source.lock.locked() and camera_source.config.mode == 'websocket'
+                    and not rgbd_receiver.connected and operation_received_frame):
                 end_active_operation(f"Stream disconnected for {STREAM_END_TIMEOUT_SECONDS} seconds")
 
             while True:
@@ -216,17 +222,19 @@ async def lifespan(_app: FastAPI):
     async def paired_watchdog():
         while True:
             await asyncio.sleep(1)
+            if camera_source.lock.locked():
+                continue
             if (current_operation_id and operation_started_at is not None
                     and not operation_received_frame and not any(recorder.has_frames for recorder in archive_recorders) and not rgbd_receiver.last_packet_at
                     and time.monotonic() - operation_started_at > STREAM_START_TIMEOUT_SECONDS):
                 await asyncio.to_thread(end_active_operation, 'No first frame within 120 seconds')
                 if not current_operation_id:
-                    await rgbd_receiver.reset(None)
+                    await receive_operation_end()
             if (rgbd_receiver.session_id and rgbd_receiver.operation_id and rgbd_receiver.last_packet_at
                     and time.monotonic() - rgbd_receiver.last_packet_at > STREAM_END_TIMEOUT_SECONDS):
                 await asyncio.to_thread(end_active_operation, 'RGB-D frame timeout (10 seconds)')
                 if not current_operation_id:
-                    await rgbd_receiver.reset(None)
+                    await receive_operation_end()
     watchdog = asyncio.create_task(paired_watchdog())
     recovery = asyncio.create_task(recovery_worker())
     yield
@@ -265,6 +273,24 @@ async def maintenance_guard(request: Request, call_next):
 @app.get('/api/simulation-config')
 async def get_simulation_config():
     return simulation_config.copy()
+
+
+@app.get('/api/camera-source')
+async def get_camera_source():
+    return camera_source.status()
+
+
+@app.post('/api/camera-source')
+async def set_camera_source(config: CameraSourceConfig):
+    global operation_started_at, operation_received_frame
+    try:
+        result = await camera_source.select(config)
+    except (OSError, ValueError, KeyError, asyncio.TimeoutError, asyncio.IncompleteReadError) as error:
+        raise HTTPException(503, detail=str(error) or type(error).__name__) from error
+    if current_operation_id:
+        operation_started_at = time.monotonic()
+        operation_received_frame = False
+    return result
 
 @app.post('/api/testing/lease')
 async def testing_lease(request: Request):
@@ -313,6 +339,11 @@ async def receive_simulation_config(config: SimulationConfig):
 
 @app.post("/api/operation-update")
 async def receive_operation_update(update: OperationUpdate):
+    async with camera_source.lock:
+        return await _receive_operation_update(update)
+
+
+async def _receive_operation_update(update: OperationUpdate):
     global current_video_filenames, current_operation_id, archive_recorders
     global operation_started_at, operation_received_frame
     if current_operation_id == update.opID and current_video_filenames:
@@ -321,7 +352,7 @@ async def receive_operation_update(update: OperationUpdate):
     operation_received_frame = False
     if maintenance.lease:
         maintenance.save({**maintenance.lease, 'operationId': update.opID})
-    await rgbd_receiver.reset(update.opID)
+    await camera_source.operation_start(update.opID)
     with archive_lock:
         stop_archive_recorders()
         set_current_operation(update.opID)
@@ -337,7 +368,16 @@ async def receive_operation_update(update: OperationUpdate):
 
 @app.post("/api/operation-end")
 async def receive_operation_end():
+    async with camera_source.lock:
+        return await _receive_operation_end()
+
+
+async def _receive_operation_end():
     global current_operation_id, current_video_filenames
+    async with rgbd_receiver.lock:
+        rgbd_receiver.source_mode = 'switching'
+    await camera_source.stop()
+    await camera_source.disconnect_websocket()
     with archive_lock:
         # Disable creation before waiting for existing ffmpeg processes to stop.
         current_video_filenames = None
@@ -345,6 +385,8 @@ async def receive_operation_end():
         set_current_operation(None)
         stop_archive_recorders()
     await rgbd_receiver.reset(None)
+    rgbd_receiver.source_mode = camera_source.config.mode
+    camera_source.state = 'waiting'
     return {"status": "success"}
 
 

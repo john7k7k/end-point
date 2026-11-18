@@ -1,4 +1,5 @@
 import CameraExtrinsics from "../models/CameraExtrinsics.js";
+import { requireLogin } from '../loginAuthorization.js';
 
 const DEFAULT_EXTRINSICS = {
   key: "default",
@@ -42,6 +43,7 @@ export const getCameraExtrinsics = async (_req, res) => {
 
 export const updateCameraExtrinsics = async (req, res) => {
   try {
+    if (!await requireLogin(req, res)) return;
     const translation = asVector(req.body.translation, "translation");
     const rotationDegrees = asVector(req.body.rotationDegrees, "rotationDegrees");
     if (Object.values(rotationDegrees).some((angle) => Math.abs(angle) > 360)) {

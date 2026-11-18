@@ -2,7 +2,7 @@ import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import User from "../models/User.js";
 
-const tokenSecret = process.env.JWT_SECRET || "vision-portal-development-secret-change-before-production";
+import { tokenSecret } from '../loginAuthorization.js';
 const safeUser = (user) => ({ id: user._id.toString(), name: user.name, email: user.email, signUpTime: user.signUpTime });
 const createToken = (user) => jwt.sign({ sub: user._id.toString(), name: user.name, email: user.email }, tokenSecret, { expiresIn: "8h" });
 

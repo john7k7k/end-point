@@ -5,7 +5,7 @@ import Raw from '../src/models/RawSensorMeasurement.js';
 import Telemetry from '../src/models/OperatorTelemetry.js';
 
 test('live saves raw inputs only; end rebuilds all device algorithms', {skip: !process.env.RGBD_TEST_MONGO}, async()=>{
-  assert.match(process.env.RGBD_TEST_MONGO,/\/vision_rgbd_sync_test$/);
+  assert.match(process.env.RGBD_TEST_MONGO,/\/vision_rgbd_sync_test(?:_[a-f0-9]{12})?$/);
   // No subscription to the running platform's broker during this isolated test.
   process.env.MQTT_URL='mqtt://127.0.0.1:1';
   const pipeline=await import('../src/mqtt/mqttClient.js');

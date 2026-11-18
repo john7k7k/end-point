@@ -1,6 +1,8 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue';
 import api from '../api';
+import { session } from '../auth';
+import CameraIntrinsicsForm from '../components/CameraIntrinsicsForm.vue';
 
 const loading = ref(true);
 const saving = ref(false);
@@ -52,7 +54,7 @@ const saveCalibration = async () => {
     const calibration = (await api.put('/calibration/camera-extrinsics', {
       translation: { ...form.translation },
       rotationDegrees: { ...form.rotationDegrees }
-    })).data;
+    }, { headers: { Authorization: `Bearer ${session.value?.token || ''}` } })).data;
     applyCalibration(calibration);
     message.value = '相機外參已儲存，後端與 AI 可透過校正 API 讀取此設定。';
   } catch (requestError) {
@@ -73,11 +75,15 @@ onMounted(loadCalibration);
   <section class="page-card calibration-page">
     <div class="section-title">
       <p class="eyebrow">Calibration</p>
-      <h2>相機外參校正</h2>
-      <p class="calibration-lead">設定深度相機座標系 C 轉換至設備／IMU 座標系 B 的固定外參：<code>p<sup>B</sup> = R<sub>C</sub><sup>B</sup> p<sup>C</sup> + t<sub>C</sub><sup>B</sup></code>。</p>
+      <h2>相機參數設定</h2>
     </div>
 
+    <CameraIntrinsicsForm />
     <article class="panel calibration-panel">
+      <div>
+        <h3>相機外參</h3>
+        <p class="calibration-lead">設定 RGB-D 相機座標系 C 到設備／IMU 座標系 B 的轉換：<code>p<sup>B</sup> = R<sub>C</sub><sup>B</sup> p<sup>C</sup> + t<sub>C</sub><sup>B</sup></code>。</p>
+      </div>
       <p v-if="loading" class="placeholder">正在載入校正設定…</p>
       <template v-else>
         <div class="calibration-reference">
@@ -112,3 +118,7 @@ onMounted(loadCalibration);
     </article>
   </section>
 </template>
+
+<style scoped>
+.calibration-page > .calibration-panel + .calibration-panel { margin-top: 20px; }
+</style>

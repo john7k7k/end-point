@@ -25,7 +25,7 @@ const routes = [
   { path: '/history/operations', name: 'history-operations', component: OperationLogPage, meta: { requiresAuth: true } },
   { path: '/media/stream', name: 'media-stream', component: StreamPage, meta: { requiresAuth: true } },
   { path: '/media/voice', name: 'media-voice', component: VoicePage, meta: { requiresAuth: true } },
-  { path: '/settings/camera-extrinsics', name: 'camera-extrinsics', component: CameraCalibrationPage, meta: { requiresAuth: true } }
+  { path: '/settings/camera-parameters', alias: '/settings/camera-extrinsics', name: 'camera-extrinsics', component: CameraCalibrationPage, meta: { requiresAuth: true } }
 ];
 
 const router = createRouter({

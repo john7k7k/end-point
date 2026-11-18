@@ -127,9 +127,27 @@ GET {{api}}/calibration/camera-extrinsics
 
 ### 21 設定相機外參（示範零外參，會覆寫真實設定，確認後才執行）
 PUT {{api}}/calibration/camera-extrinsics
+Authorization: Bearer {{login.response.body.$.token}}
 Content-Type: application/json
 
 {"translation":{"x":0,"y":0,"z":0},"rotationDegrees":{"x":0,"y":0,"z":0}}
+
+### 21a 查詢相機內參覆寫（舊邊緣端未帶 cameraId 時使用 default）
+GET {{api}}/calibration/camera-intrinsics/default
+
+### 21b 設定內參（示意數值；換成對齊後影像的實測校正值再送出）
+PUT {{api}}/calibration/camera-intrinsics/default
+Authorization: Bearer {{login.response.body.$.token}}
+Content-Type: application/json
+
+{"width":640,"height":360,"fx":465,"fy":465,"cx":320,"cy":180}
+
+### 21c 停用覆寫，回到封包內參
+PUT {{api}}/calibration/camera-intrinsics/default
+Authorization: Bearer {{login.response.body.$.token}}
+Content-Type: application/json
+
+{"enabled":false}
 
 ### 22 舊 detection 模擬入口（FOV 內無螺絲時 204，不是錯誤；不能當真實 YOLO 上傳）
 # @name createDetection

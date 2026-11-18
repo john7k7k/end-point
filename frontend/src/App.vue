@@ -41,7 +41,7 @@ const navGroups = [
     title: '系統設定',
     requiresAuth: true,
     items: [
-      { label: '相機外參設定', to: '/settings/camera-extrinsics' }
+      { label: '相機參數設定', to: '/settings/camera-parameters' }
     ]
   }
 ];

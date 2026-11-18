@@ -1,0 +1,88 @@
+# VS Code REST Client. Use an existing account and an operation owned by it.
+# Backend must start with JWT_SECRET (>=32 chars); log in again after changing it.
+# These requests do not change the operation, poses, or raw measurements.
+@api = http://192.168.0.156:3000/api
+@email = replace-me@example.com
+@password = replace-me
+@opId = 000000000000000000000000
+@from = 2026-11-17T06:30:10Z
+@to = 2026-11-17T06:30:40Z
+@x = 5.0
+@y = 3.0
+@z = 1.4
+
+### Log in first (200)
+# @name login
+POST {{api}}/auth/login
+Content-Type: application/json
+
+{
+  "email": "{{email}}",
+  "password": "{{password}}"
+}
+
+### Check available fusion outputs (200)
+# @name poses
+GET {{api}}/operations/{{opId}}/device-poses?algorithm=gwo4d&from={{from}}&to={{to}}&limit=50
+Authorization: Bearer {{login.response.body.$.token}}
+
+### Next page (only if poses.nextCursor is not null)
+GET {{api}}/operations/{{opId}}/device-poses?algorithm=gwo4d&from={{from}}&to={{to}}&limit=50&cursor={{poses.response.body.$.nextCursor}}
+Authorization: Bearer {{login.response.body.$.token}}
+
+### Read raw UWB records (200)
+GET {{api}}/operations/{{opId}}/raw-sensor-measurements?source=uwb&from={{from}}&to={{to}}&limit=100
+Authorization: Bearer {{login.response.body.$.token}}
+
+### Read raw IMU records (200)
+GET {{api}}/operations/{{opId}}/raw-sensor-measurements?source=imu&from={{from}}&to={{to}}&limit=100
+Authorization: Bearer {{login.response.body.$.token}}
+
+### Fixed-point hardware test: ONLY if verified that MQTT data came from real sensors
+# The time window must cover a stationary tag at the measured world XYZ.
+# Run after ending the operation and completing telemetry replay.
+POST {{api}}/operations/{{opId}}/device-accuracy/evaluate
+Authorization: Bearer {{login.response.body.$.token}}
+Content-Type: application/json
+
+{
+  "from": "{{from}}",
+  "to": "{{to}}",
+  "groundTruth": {
+    "type": "static",
+    "coordinateFrame": "workspace_world",
+    "referencePoint": "uwb_tag",
+    "positionM": { "x": {{x}}, "y": {{y}}, "z": {{z}} }
+  },
+  "algorithms": ["gwo4d", "ekf"],
+  "confirmHardwareInput": true,
+  "maxSensorAgeMs": 1000,
+  "includeSamples": true,
+  "sampleLimit": 50,
+  "sampleOffset": 0
+}
+
+### Diagnostic only: includes simulation and legacy poses. NOT hardware accuracy.
+POST {{api}}/operations/{{opId}}/device-accuracy/evaluate
+Authorization: Bearer {{login.response.body.$.token}}
+Content-Type: application/json
+
+{
+  "from": "{{from}}",
+  "to": "{{to}}",
+  "groundTruth": {
+    "type": "static",
+    "coordinateFrame": "workspace_world",
+    "referencePoint": "uwb_tag",
+    "positionM": { "x": {{x}}, "y": {{y}}, "z": {{z}} }
+  },
+  "diagnostic": true,
+  "includeSamples": true
+}
+
+### Missing token (401 with configured JWT_SECRET)
+GET {{api}}/operations/{{opId}}/device-poses?from={{from}}&to={{to}}
+
+### Reversed time range (400 for a valid owned operation)
+GET {{api}}/operations/{{opId}}/device-poses?from={{to}}&to={{from}}
+Authorization: Bearer {{login.response.body.$.token}}

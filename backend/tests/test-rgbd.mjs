@@ -10,7 +10,7 @@ import OperatorTelemetry from '../src/models/OperatorTelemetry.js';
 test('RGB-D storage: idempotency, history, validation, ended-operation rejection',
   { skip: !process.env.RGBD_TEST_MONGO }, async () => {
     const uri = process.env.RGBD_TEST_MONGO;
-    assert.match(uri, /\/vision_rgbd_sync_test$/); // Never point tests at production.
+    assert.match(uri, /\/vision_rgbd_sync_test(?:_[a-f0-9]{12})?$/); // Never point tests at production.
     await mongoose.connect(uri);
     const op = await Operation.create({ userId: new mongoose.Types.ObjectId(), startTime: new Date() });
     await RgbdFrame.init();

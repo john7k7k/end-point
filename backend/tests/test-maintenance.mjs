@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 test('checkpoint auth, baseline guard, cascades, exact restore and verification', { skip: !process.env.RGBD_TEST_MONGO }, async () => {
-  assert.match(process.env.RGBD_TEST_MONGO, /\/vision_rgbd_sync_test$/);
+  assert.match(process.env.RGBD_TEST_MONGO, /\/vision_rgbd_sync_test(?:_[a-f0-9]{12})?$/);
   const root = await mkdtemp(path.join(tmpdir(), 'vision-maintenance-'));
   process.env.API_TEST_CHECKPOINT_ROOT = path.join(root, 'checkpoints');
   process.env.VIDEO_ARCHIVE_ROOT = path.join(root, 'video');

@@ -5,8 +5,15 @@ const OperatorTelemetrySchema = new mongoose.Schema({
   timestamp: { type: Date, required: true, index: true },
   dataSource: { type: String, default: "simulation" },
   fusionAlgorithm: String,
+  provenance: {
+    mode: String,
+    inputClass: String,
+    lastUwbAt: Date,
+    lastImuAt: Date
+  },
   telemetry: { type: mongoose.Schema.Types.Mixed, required: true }
 }, { versionKey: false });
 
 OperatorTelemetrySchema.index({ operationId: 1, timestamp: -1 });
+OperatorTelemetrySchema.index({ operationId: 1, timestamp: 1, _id: 1 });
 export default mongoose.model("OperatorTelemetry", OperatorTelemetrySchema);

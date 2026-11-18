@@ -334,7 +334,7 @@ onUnmounted(() => {
           <template v-else><label><input v-model="showPath" type="checkbox" @change="updateScene" /><span>原始設備定位路徑</span></label><small>此紀錄尚無演算法比較結果；需有原始資料才能重算。</small></template>
         </div>
         <label v-else class="path-note">UWB + IMU 融合演算法<select v-model="selectedDeviceAlgorithm" @change="selectDeviceAlgorithm"><option v-for="(label, id) in deviceLabels" :key="id" :value="id">{{ label }}</option></select></label>
-        <RouterLink class="calibration-link" to="/settings/camera-extrinsics">設定 RGB-D 相機外參 →</RouterLink>
+        <RouterLink class="calibration-link" to="/settings/camera-parameters">設定 RGB-D 相機參數 →</RouterLink>
       </aside>
     </section>
     <p v-if="error" class="alert">{{ error }}</p>

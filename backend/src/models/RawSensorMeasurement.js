@@ -9,4 +9,5 @@ const RawSensorMeasurementSchema = new mongoose.Schema({
 }, { versionKey: false });
 
 RawSensorMeasurementSchema.index({ operationId: 1, timestamp: 1, source: 1 });
+RawSensorMeasurementSchema.index({ operationId: 1, timestamp: 1, _id: 1 });
 export default mongoose.model("RawSensorMeasurement", RawSensorMeasurementSchema);

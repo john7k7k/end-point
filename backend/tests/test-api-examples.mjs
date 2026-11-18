@@ -5,14 +5,15 @@ const read = file => readFileSync(new URL(file, import.meta.url), 'utf8');
 
 test('HTTP example covers every backend and AI business REST route', () => {
   const example=read('../apiTest/platform.http');
-  const requests=[...example.matchAll(/^(GET|POST|PUT|PATCH|DELETE)\s+(\S+)/gm)]
+  const accuracy=read('../apiTest/device-accuracy.http');
+  const requests=[...(example+'\n'+accuracy).matchAll(/^(GET|POST|PUT|PATCH|DELETE)\s+(\S+)/gm)]
     .map(([,method,url])=>[method,url.replace('{{api}}','/api').replace('{{ai}}','').split('?')[0]]);
   const modules={auth:'/api/auth',user:'/api/users',operation:'/api/operations',detection:'/api/detections',
     device:'/api/device',video:'/api/videos',simulation:'/api/simulation',positioning:'/api/positioning',
-    operatorTelemetry:'/api/operator-telemetry',calibration:'/api/calibration',rgbd:'/api/rgbd'};
+    operatorTelemetry:'/api/operator-telemetry',calibration:'/api/calibration',rgbd:'/api/rgbd',deviceAccuracy:'/api/operations'};
   const canonical=url=>url.replace(/\{\{[^}]+\}\}|:[^/]+/g,':param').replace(/\/$/,'');
   for(const [name,prefix] of Object.entries(modules)) {
-    const source=read(`../src/routes/${name}Routes.js`);
+    const source=read(`../src/routes/${name === 'deviceAccuracy' ? name : name+'Routes'}.js`);
     for(const [,method,route] of source.matchAll(/router\.(get|post|put|patch|delete)\(['"]([^'"]+)['"]/g)) {
       const expected=canonical(prefix+route);
       const matches=url=>{
@@ -30,9 +31,9 @@ test('HTTP example covers every backend and AI business REST route', () => {
   }
   assert.match(example,/@host = 192\.168\.0\.156/);
   // REST Client interpolates values before sending. Check the JSON bodies after dummy interpolation.
-  for(const section of example.split(/^###.*$/m)) {
+  for(const section of (example+'\n'+accuracy).split(/^###.*$/m)) {
     const body=section.match(/\r?\n\r?\n(\{[\s\S]*\})\s*$/)?.[1];
-    if(body)assert.doesNotThrow(()=>JSON.parse(body.replace(/\{\{[^}]+\}\}/g,'placeholder')));
+    if(body)assert.doesNotThrow(()=>JSON.parse(body.replace(/\{\{[xyz]\}\}/g,'0').replace(/\{\{[^}]+\}\}/g,'placeholder')));
   }
 });
 
@@ -58,5 +59,5 @@ test('MQTT example has valid JSON payloads and all supported topics, with no fak
   assert.match(text,/vision\/operation\/ack\/\{\{userId\}\}/);
   assert.match(text,/vision\/notification/);
   const files=readdirSync(new URL('../apiTest/',import.meta.url),{withFileTypes:true}).filter(f=>f.isFile()).map(f=>f.name);
-  assert.deepEqual(files.sort(),['RUN_ALL.md','platform.http','platform.mqtt','rtsp_publish.py','run-all.ps1']);
+  assert.deepEqual(files.sort(),['DEVICE_ACCURACY.md','RUN_ALL.md','device-accuracy.http','platform.http','platform.mqtt','rtsp_publish.py','run-all.ps1']);
 });

@@ -10,6 +10,7 @@ from pathlib import Path
 
 import numpy as np
 import pyrealsense2 as rs
+import requests
 from websockets.exceptions import ConnectionClosed
 from websockets.sync.client import connect
 
@@ -159,6 +160,7 @@ def run(args, stop):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--probe", action="store_true")
+    parser.add_argument("--follow-server", action="store_true", help="Wait for the server's WebSocket mode and active operation; reconnect across operations")
     parser.add_argument("--server")
     parser.add_argument("--rgbd-port", type=int, default=8000)
     parser.add_argument("--operation-id")
@@ -171,7 +173,7 @@ def main():
     parser.add_argument("--send-fps", type=float, default=5)
     parser.add_argument("--frames", type=int, default=0, help="Number of confirmed frames; 0 runs until stopped")
     args = parser.parse_args()
-    if not args.probe and not (args.server and args.operation_id):
+    if not args.probe and not (args.server and (args.operation_id or args.follow_server)):
         parser.error("streaming requires --server and --operation-id")
     if not 0 < args.send_fps <= args.fps or min(args.width, args.height) <= 0 or args.frames < 0:
         parser.error("Require positive dimensions, 0 < send-fps <= fps, and frames >= 0")
@@ -182,6 +184,19 @@ def main():
 
     signal.signal(signal.SIGINT, request_stop)
     signal.signal(signal.SIGTERM, request_stop)
+    if args.follow_server and not args.probe:
+        while not stop.is_set():
+            try:
+                response = requests.get(f"http://{args.server}:{args.rgbd_port}/api/camera-source", timeout=5)
+                response.raise_for_status()
+                state = response.json()
+                if state.get('mode') == 'websocket' and state.get('operationId'):
+                    args.operation_id = state['operationId']
+                    run(args, stop)
+            except (OSError, ValueError, RuntimeError, ConnectionClosed, requests.RequestException) as error:
+                print(error, file=sys.stderr)
+            stop.wait(1)
+        return 0
     try:
         run(args, stop)
     except (OSError, ValueError, RuntimeError, ConnectionClosed) as error:
